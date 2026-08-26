@@ -171,6 +171,60 @@ describe('HarnessSdkJsonRpcServer', () => {
     }
   })
 
+  it('resumes a persisted session across server restarts', { timeout: 30_000 }, async () => {
+    const storageDir = await mkdtemp(join(tmpdir(), 'dsh-jsonrpc-resume-'))
+    const llmServer = await mockCompletionServer()
+    vi.stubEnv('DEEPSEEK_API_KEY', 'test-key')
+    vi.stubEnv('DEEPSEEK_BASE_URL', llmServer.url)
+    const persistedText = async (): Promise<string> => {
+      const inspectCtx = await makeHarness(storageDir)
+      try {
+        const inspection = await inspectCtx.sessionPersistence.load(SessionId('resumable'))
+        return JSON.stringify(inspection.events)
+      } finally {
+        await inspectCtx.fiber.dispose()
+      }
+    }
+
+    try {
+      const firstCtx = await makeHarness(storageDir)
+      try {
+        const firstServer = new HarnessSdkJsonRpcServer(firstCtx, new FakeTransport())
+        await firstServer.initialize({ cwd: storageDir, provider: 'deepseek-official', model: 'resume-model' })
+        await firstServer.prompt({ sessionId: 'resumable', contentBlocks: [{ type: 'text', text: 'first message' }] })
+        await vi.waitFor(() => { expect(llmServer.requests).toHaveLength(1) })
+        await firstServer.shutdown()
+      } finally {
+        await firstCtx.fiber.dispose()
+      }
+      expect(await persistedText()).toContain('first message')
+
+      const secondCtx = await makeHarness(storageDir)
+      try {
+        const resume = vi.spyOn(secondCtx.agents, 'resume')
+        const secondServer = new HarnessSdkJsonRpcServer(secondCtx, new FakeTransport())
+        await secondServer.initialize({ cwd: storageDir, provider: 'deepseek-official', model: 'resume-model' })
+        await secondServer.prompt({ sessionId: 'resumable', contentBlocks: [{ type: 'text', text: 'second message' }] })
+        await vi.waitFor(() => { expect(llmServer.requests).toHaveLength(2) })
+        // The second process resumes the persisted session instead of creating a fresh one.
+        expect(resume).toHaveBeenCalled()
+        // The resumed history is visible to the model in the new process.
+        const secondBody = llmServer.requests[1] as { messages: { role: string; content: string }[] }
+        expect(JSON.stringify(secondBody.messages)).toContain('first message')
+        await secondServer.shutdown()
+      } finally {
+        await secondCtx.fiber.dispose()
+      }
+
+      // The resumed session keeps appending instead of colliding with the stored log.
+      const after = await persistedText()
+      expect(after).toContain('second message')
+      expect(after).toContain('first message')
+    } finally {
+      await rm(storageDir, { recursive: true, force: true })
+    }
+  })
+
   it('queues overlapping prompts for one session without blocking other sessions', async () => {
     const mainFollowup = vi.fn<Agent['followup']>()
     const mainAgent = ({

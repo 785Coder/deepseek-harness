@@ -7,10 +7,11 @@
 
 import type { Context } from '@deepseek-ai/cordis'
 import { resolve } from 'node:path'
-import type { Agent, AgentHandle } from '@deepseek-ai/dsh-agent'
+import type { Agent, AgentHandle, AgentOptions } from '@deepseek-ai/dsh-agent'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import { carrierKeyOf, type Scoped } from '@deepseek-ai/dsh-scope'
 import { SessionId } from '@deepseek-ai/dsh-session'
+import type { SessionPersistence } from '@deepseek-ai/dsh-session-persistence'
 import type SubagentRuntime from '@deepseek-ai/dsh-subagent'
 import type { SubagentRunEndInfo } from '@deepseek-ai/dsh-subagent'
 import * as LlmDeepSeek from '@deepseek-ai/dsh-llm-deepseek'
@@ -220,18 +221,26 @@ export class HarnessSdkJsonRpcServer {
     // rows in the host plane, so this agent reads them from the global layer. A
     // deployment that configures a roster has to join one here first
     // (@deepseek-ai/dsh-agent-presets README, "Composing a child agent").
-    const handle = await this.ctx.agents.create({
-      sessionId: SessionId(sessionId),
-      meta: { cwd: this.cwd },
-      agentOptions: {
-        provider: this.provider,
-        model: this.model,
-        ...this.maxTokens === undefined ? {} : { maxTokens: this.maxTokens },
-      },
-    })
+    const id = SessionId(sessionId)
+    const agentOptions: AgentOptions = {
+      provider: this.provider,
+      model: this.model,
+      ...this.maxTokens === undefined ? {} : { maxTokens: this.maxTokens },
+    }
+    const persistence = this.ctx.get('sessionPersistence')
+    const handle = persistence !== undefined
+      && typeof persistence.listSnapshots === 'function'
+      && await this.hasPersistedLog(persistence, id)
+      ? await this.ctx.agents.resume({ resumeSessionId: id, agentOptions })
+      : await this.ctx.agents.create({ sessionId: id, meta: { cwd: this.cwd }, agentOptions })
     const rec: SessionRecord = { handle }
     this.sessions.set(sessionId, rec)
     return rec
+  }
+
+  private async hasPersistedLog(persistence: SessionPersistence, id: SessionId): Promise<boolean> {
+    const snapshots = await persistence.listSnapshots()
+    return snapshots.some(snapshot => snapshot.header.id === id)
   }
 
   private hasAdapterFor(provider: string): boolean {
