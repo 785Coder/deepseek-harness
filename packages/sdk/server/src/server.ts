@@ -25,6 +25,10 @@ import type {
   SubagentFinishedNotification,
   SubagentStartedNotification,
 } from '@deepseek-ai/dsh-sdk-protocol'
+import type { ApprovalOutcome } from '@deepseek-ai/dsh-user-approval/types'
+// Side-effect type import: resolves the `approval/request` waterfall and
+// `ctx.get('approval')` without a value dependency on the seam (optional composition).
+import type {} from '@deepseek-ai/dsh-user-approval'
 import { UserQuestionError } from '@deepseek-ai/dsh-user-questions'
 import type { AskUserQuestionAnswer } from '@deepseek-ai/dsh-user-questions/types'
 
@@ -61,6 +65,7 @@ export class HarnessSdkJsonRpcServer {
   private llmFiber: { dispose(): Promise<void> } | undefined
   private readonly sessions = new Map<string, SessionRecord>()
   private readonly sessionCreations = new Map<string, Promise<SessionRecord>>()
+  private readonly ownedSessionIds = new Set<string>()
   private readonly disposers: (() => void)[] = []
   private shutdownTask: Promise<Record<string, never>> | undefined
   private shuttingDown = false
@@ -81,6 +86,11 @@ export class HarnessSdkJsonRpcServer {
     this.disposers.push(ctx.on('session/created', (session) => {
       const parentSession = session.header.parentSession
       if (parentSession === undefined) return
+      // A child of an owned session inherits ownership: its approvals also
+      // belong to this server's client, not to other answerers.
+      if (this.ownedSessionIds.has(String(parentSession))) {
+        this.ownedSessionIds.add(String(session.id))
+      }
       const payload: SubagentStartedNotification = {
         parentSessionId: String(parentSession),
         childSessionId: String(session.id),
@@ -122,6 +132,24 @@ export class HarnessSdkJsonRpcServer {
             // method with an AskUserQuestionAnswer, the only shape ask() accepts.
           ) as Promise<AskUserQuestionAnswer>
         },
+      }))
+    }
+    // SDK 批准中继：把 ctx.approval 的 waterfall 经 JSON-RPC 交给 SDK 客户端应答。
+    const approval = this.ctx.get('approval')
+    if (approval !== undefined) {
+      this.disposers.push(this.ctx.on('approval/request', (req, next) => {
+        if (!this.ownedSessionIds.has(String(req.agent.session.id))) return next()
+        return this.transport.request(
+          'session/approval',
+          {
+            sessionId: String(req.agent.session.id),
+            toolName: req.toolName,
+            ...(req.callId === undefined ? {} : { callId: req.callId }),
+            ...(req.reason === undefined ? {} : { reason: req.reason }),
+          },
+          req.signal,
+          // 客户端以 ApprovalOutcome 应答该方法；服务层会规整异常返回为 fail-closed。
+        ) as Promise<ApprovalOutcome>
       }))
     }
   }
@@ -257,6 +285,9 @@ export class HarnessSdkJsonRpcServer {
       : await this.ctx.agents.create({ sessionId: id, meta: { cwd: this.cwd }, agentOptions })
     const rec: SessionRecord = { handle }
     this.sessions.set(sessionId, rec)
+    // This server owns the sessions it creates: their approvals relay to its
+    // client rather than to other answerers (Web GUI, ACP).
+    this.ownedSessionIds.add(String(id))
     return rec
   }
 

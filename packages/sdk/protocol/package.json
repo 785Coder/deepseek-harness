@@ -35,6 +35,7 @@
     "@deepseek-ai/dsh-llm": "workspace:^",
     "@deepseek-ai/dsh-session": "workspace:^",
     "@deepseek-ai/dsh-subagent": "workspace:^",
+    "@deepseek-ai/dsh-user-approval": "workspace:^",
     "@deepseek-ai/dsh-user-questions": "workspace:^",
     "@deepseek-ai/cordis": "workspace:^"
   },
@@ -43,6 +44,7 @@
     "@deepseek-ai/dsh-llm": "workspace:^",
     "@deepseek-ai/dsh-session": "workspace:^",
     "@deepseek-ai/dsh-subagent": "workspace:^",
+    "@deepseek-ai/dsh-user-approval": "workspace:^",
     "@deepseek-ai/dsh-user-questions": "workspace:^",
     "@deepseek-ai/cordis": "workspace:^"
   }

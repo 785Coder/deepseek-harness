@@ -8,9 +8,10 @@
  * @module @deepseek-ai/dsh-sdk-protocol/types
  */
 
-import type { ContentBlock } from '@deepseek-ai/dsh-llm'
+import type { CallId, ContentBlock } from '@deepseek-ai/dsh-llm'
 import type { SessionEvent } from '@deepseek-ai/dsh-session'
 import type { SubagentStopReason } from '@deepseek-ai/dsh-subagent'
+import type { ApprovalOutcome } from '@deepseek-ai/dsh-user-approval/types'
 import type { AskUserQuestionAnswer, AskUserQuestionItem } from '@deepseek-ai/dsh-user-questions/types'
 
 /** Parameters for the process-wide SDK handshake. */
@@ -113,7 +114,20 @@ export interface SessionQuestionParams {
   questions: AskUserQuestionItem[]
 }
 
+/** Server→client 请求：某 SDK session 的 agent 请求一次批准。 */
+export interface SessionApprovalParams {
+  /** 请求批准的 session（含本服务端创建的子任务 session）。 */
+  sessionId: string
+  /** 待批准的工具名。 */
+  toolName: string
+  /** 请求方持有该工具调用时的调用 id。 */
+  callId?: CallId
+  /** 请求方给出的人性化理由。 */
+  reason?: string
+}
+
 /** Server→client 请求方法表；运行时铸请求 id，客户端应答时原样回显。 */
 export interface HarnessSdkServerRequestMap {
   'session/question': { params: SessionQuestionParams; result: AskUserQuestionAnswer }
+  'session/approval': { params: SessionApprovalParams; result: ApprovalOutcome }
 }
