@@ -13,6 +13,7 @@ export type { JsonRpcTransportPeer } from './transport.ts'
 export type {
   HarnessSdkNotificationMap,
   HarnessSdkRequestMap,
+  HarnessSdkServerRequestMap,
   InitializeParams,
   InitializeResult,
   SdkRunStatus,
@@ -20,6 +21,7 @@ export type {
   SessionStatusNotification,
   SessionPromptParams,
   SessionPromptResult,
+  SessionQuestionParams,
   SubagentFinishedNotification,
   SubagentStartedNotification,
 } from './types.ts'

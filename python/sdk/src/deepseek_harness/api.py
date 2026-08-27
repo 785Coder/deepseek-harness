@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import queue
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -7,7 +8,12 @@ from typing import Callable
 
 from .client import HarnessClient, HarnessConfig
 from .errors import SdkProtocolError
-from .models import JsonObject, Notification
+from .models import IncomingRequest, JsonObject, Notification
+
+# 仅 on_request 启用时轮询请求队列的时间片：会话循环阻塞在等待通知的空闲期，
+# 也要周期醒来清空运行时发来的 session/question 请求，否则代理停在等待答案时
+# 提问永远不会被处理。
+_REQUEST_POLL_SECONDS = 0.05
 
 
 @dataclass(slots=True)
@@ -120,8 +126,11 @@ class DeepSeekHarness:
         *,
         session_id: str | None = None,
         on_notification: Callable[[Notification], None] | None = None,
+        on_request: Callable[[IncomingRequest], None] | None = None,
     ) -> RunResult:
-        return self.start_session(session_id).run(input, on_notification=on_notification)
+        return self.start_session(session_id).run(
+            input, on_notification=on_notification, on_request=on_request
+        )
 
 
 class Session:
@@ -134,6 +143,7 @@ class Session:
         input: str | list[JsonObject],
         *,
         on_notification: Callable[[Notification], None] | None = None,
+        on_request: Callable[[IncomingRequest], None] | None = None,
     ) -> RunResult:
         content_blocks = normalize_input(input)
         notifications: list[Notification] = []
@@ -160,7 +170,18 @@ class Session:
 
             received = False
             while True:
-                notification = subscription.next()
+                if on_request is not None:
+                    while True:
+                        req = self.harness.client.next_request_nowait()
+                        if req is None:
+                            break
+                        on_request(req)
+                    try:
+                        notification = subscription.next(timeout=_REQUEST_POLL_SECONDS)
+                    except queue.Empty:
+                        continue
+                else:
+                    notification = subscription.next()
                 if not received:
                     if not _is_inbox_receipt(notification, self.id, message_id):
                         continue

@@ -209,6 +209,16 @@ class HarnessClient:
             raise item
         return item
 
+    def next_request_nowait(self) -> IncomingRequest | None:
+        """非阻塞取一条运行时发来的请求；无则返回 None。"""
+        try:
+            item = self._requests.get_nowait()
+        except queue.Empty:
+            return None
+        if isinstance(item, BaseException):
+            raise item
+        return item
+
     def respond(self, request_id: str | int, result: JsonValue) -> None:
         self._write_message({"jsonrpc": "2.0", "id": request_id, "result": result})
 
@@ -528,8 +538,8 @@ class NotificationSubscription:
         self._closed = True
         self._client._unsubscribe_notifications(self._subscription_id)
 
-    def next(self) -> Notification:
-        item = self._notifications.get()
+    def next(self, timeout: float | None = None) -> Notification:
+        item = self._notifications.get(timeout=timeout)
         if isinstance(item, BaseException):
             raise item
         return item

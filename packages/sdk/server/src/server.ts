@@ -25,6 +25,8 @@ import type {
   SubagentFinishedNotification,
   SubagentStartedNotification,
 } from '@deepseek-ai/dsh-sdk-protocol'
+import { UserQuestionError } from '@deepseek-ai/dsh-user-questions'
+import type { AskUserQuestionAnswer } from '@deepseek-ai/dsh-user-questions/types'
 
 interface SessionRecord {
   handle: AgentHandle
@@ -102,6 +104,26 @@ export class HarnessSdkJsonRpcServer {
       }
       transport.notify('subagent.finished', payload)
     }))
+    // SDK 提问中继：把 ask_user_question 经 JSON-RPC 交给 SDK 客户端应答，而非 Web UI。
+    const userQuestions = this.ctx.get('userQuestions')
+    if (userQuestions !== undefined) {
+      this.disposers.push(userQuestions.registerProvider({
+        ask: (request) => {
+          const sessionId = request.agent?.id
+          if (sessionId === undefined) {
+            return Promise.reject(new UserQuestionError(
+              'sdk user interaction requires an agent-owned session', 'ASK_MISSING_AGENT'))
+          }
+          return this.transport.request(
+            'session/question',
+            { sessionId: String(sessionId), questions: request.questions },
+            request.signal,
+            // The peer resolves an untyped wire result; the client answers this
+            // method with an AskUserQuestionAnswer, the only shape ask() accepts.
+          ) as Promise<AskUserQuestionAnswer>
+        },
+      }))
+    }
   }
 
   /**

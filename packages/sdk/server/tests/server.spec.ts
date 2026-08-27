@@ -964,7 +964,9 @@ describe('HarnessSdkJsonRpcServer', () => {
     const ctx = {
       on: vi.fn(() => () => undefined),
       agents: { create, get: () => undefined },
-      get: () => ({ listProviders: () => [{ id: 'mock', name: 'Mock' }] }),
+      // 仅 'llm' 键提供 listProviders（hasAdapterFor 消费）；其它键返回 undefined，
+      // 使构造函数里的 ctx.get('userQuestions') 守卫正确跳过中继注册。
+      get: (name: string) => name === 'llm' ? { listProviders: () => [{ id: 'mock', name: 'Mock' }] } : undefined,
     } as unknown as Context
     const server = new HarnessSdkJsonRpcServer(ctx, new FakeTransport()) as unknown as {
       initialize(params: { cwd: string; provider: string; model: string; maxTokens?: number }): Promise<unknown>

@@ -11,6 +11,7 @@
 import type { ContentBlock } from '@deepseek-ai/dsh-llm'
 import type { SessionEvent } from '@deepseek-ai/dsh-session'
 import type { SubagentStopReason } from '@deepseek-ai/dsh-subagent'
+import type { AskUserQuestionAnswer, AskUserQuestionItem } from '@deepseek-ai/dsh-user-questions/types'
 
 /** Parameters for the process-wide SDK handshake. */
 export interface InitializeParams {
@@ -102,4 +103,17 @@ export interface HarnessSdkRequestMap {
   'initialize': { params: InitializeParams; result: InitializeResult }
   'session/prompt': { params: SessionPromptParams; result: SessionPromptResult }
   'shutdown': { params: undefined; result: Record<string, never> }
+}
+
+/** Server→client 请求：某 SDK session 的 agent 向人类提问一批问题。 */
+export interface SessionQuestionParams {
+  /** 提问的 session（仅根 session；DELEGATED_CALLER 已被服务层拒绝）。 */
+  sessionId: string
+  /** 待渲染的问题批次，答案须覆盖每一项。 */
+  questions: AskUserQuestionItem[]
+}
+
+/** Server→client 请求方法表；运行时铸请求 id，客户端应答时原样回显。 */
+export interface HarnessSdkServerRequestMap {
+  'session/question': { params: SessionQuestionParams; result: AskUserQuestionAnswer }
 }
