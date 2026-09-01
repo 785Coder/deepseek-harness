@@ -48,6 +48,8 @@ const ASSET_GLOBS = [
   'node_modules/**/*.json',
   'node_modules/**/*.node',
   'node_modules/**/*.wasm',
+  'node_modules/**/*.so',
+  'node_modules/**/*.so.*',
 ]
 
 const PLATFORMS = ['linux', 'macos'] as const

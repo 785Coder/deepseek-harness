@@ -8723,12 +8723,18 @@ importers:
       '@deepseek-ai/dsh-agent':
         specifier: workspace:^
         version: link:../../packages/core/agent
+      '@deepseek-ai/dsh-agent-default-model':
+        specifier: workspace:^
+        version: link:../../packages/core/agent-default-model
       '@deepseek-ai/dsh-agent-instructions':
         specifier: workspace:^
         version: link:../../packages/context/agent-instructions
       '@deepseek-ai/dsh-agent-loop':
         specifier: workspace:^
         version: link:../../packages/core/agent-loop
+      '@deepseek-ai/dsh-agent-presets':
+        specifier: workspace:^
+        version: link:../../packages/preset/agent-presets
       '@deepseek-ai/dsh-agent-spine-demo':
         specifier: workspace:^
         version: link:../../packages/examples/agent-spine-demo
@@ -8747,24 +8753,36 @@ importers:
       '@deepseek-ai/dsh-attachment':
         specifier: workspace:^
         version: link:../../packages/attachment/attachment
+      '@deepseek-ai/dsh-attachment-local':
+        specifier: workspace:^
+        version: link:../../packages/attachment/attachment-local
       '@deepseek-ai/dsh-authorization':
         specifier: workspace:^
         version: link:../../packages/credentials/authorization
       '@deepseek-ai/dsh-bash-local':
         specifier: workspace:^
         version: link:../../packages/shell/bash-local
+      '@deepseek-ai/dsh-bash-sandbox':
+        specifier: workspace:^
+        version: link:../../packages/shell/bash-sandbox
       '@deepseek-ai/dsh-brand':
         specifier: workspace:^
         version: link:../../packages/util/brand
       '@deepseek-ai/dsh-code-runtime':
         specifier: workspace:^
         version: link:../../packages/code-runtime/code-runtime
+      '@deepseek-ai/dsh-code-runtime-python':
+        specifier: workspace:^
+        version: link:../../packages/code-runtime/code-runtime-python
       '@deepseek-ai/dsh-code-runtime-worker-thread':
         specifier: workspace:^
         version: link:../../packages/code-runtime/code-runtime-worker-thread
       '@deepseek-ai/dsh-command-compact':
         specifier: workspace:^
         version: link:../../packages/compaction/command-compact
+      '@deepseek-ai/dsh-command-feedback':
+        specifier: workspace:^
+        version: link:../../packages/feedback/command-feedback
       '@deepseek-ai/dsh-command-goal':
         specifier: workspace:^
         version: link:../../packages/goal/command-goal
@@ -8786,6 +8804,15 @@ importers:
       '@deepseek-ai/dsh-credentials':
         specifier: workspace:^
         version: link:../../packages/credentials/credentials
+      '@deepseek-ai/dsh-credentials-local':
+        specifier: workspace:^
+        version: link:../../packages/credentials/credentials-local
+      '@deepseek-ai/dsh-file-reference':
+        specifier: workspace:^
+        version: link:../../packages/context/file-reference
+      '@deepseek-ai/dsh-file-reference-local':
+        specifier: workspace:^
+        version: link:../../packages/context/file-reference-local
       '@deepseek-ai/dsh-fs':
         specifier: workspace:^
         version: link:../../packages/fs/fs
@@ -8840,9 +8867,21 @@ importers:
       '@deepseek-ai/dsh-llm-retry':
         specifier: workspace:^
         version: link:../../packages/llm/llm-retry
+      '@deepseek-ai/dsh-lsp':
+        specifier: workspace:^
+        version: link:../../packages/lsp/lsp
+      '@deepseek-ai/dsh-lsp-stdio':
+        specifier: workspace:^
+        version: link:../../packages/lsp/lsp-stdio
       '@deepseek-ai/dsh-mcp-client':
         specifier: workspace:^
         version: link:../../packages/mcp/mcp-client
+      '@deepseek-ai/dsh-message-feedback':
+        specifier: workspace:^
+        version: link:../../packages/feedback/message-feedback
+      '@deepseek-ai/dsh-native-command':
+        specifier: workspace:^
+        version: link:../../packages/util/native-command
       '@deepseek-ai/dsh-output-retention':
         specifier: workspace:^
         version: link:../../packages/util/output-retention
@@ -8858,6 +8897,9 @@ importers:
       '@deepseek-ai/dsh-pwsh-local':
         specifier: workspace:^
         version: link:../../packages/shell/pwsh-local
+      '@deepseek-ai/dsh-pwsh-sandbox':
+        specifier: workspace:^
+        version: link:../../packages/shell/pwsh-sandbox
       '@deepseek-ai/dsh-repeat-tool-reminder':
         specifier: workspace:^
         version: link:../../packages/guard/repeat-tool-reminder
@@ -8870,6 +8912,12 @@ importers:
       '@deepseek-ai/dsh-sandbox-policy':
         specifier: workspace:^
         version: link:../../packages/sandbox/sandbox-policy
+      '@deepseek-ai/dsh-sandbox-windows-acl':
+        specifier: workspace:^
+        version: link:../../packages/sandbox/sandbox-windows-acl
+      '@deepseek-ai/dsh-schedule':
+        specifier: workspace:^
+        version: link:../../packages/schedule/schedule
       '@deepseek-ai/dsh-scope':
         specifier: workspace:^
         version: link:../../packages/core/scope
@@ -8900,6 +8948,9 @@ importers:
       '@deepseek-ai/dsh-session-projection':
         specifier: workspace:^
         version: link:../../packages/session/session-projection
+      '@deepseek-ai/dsh-session-projection-cache':
+        specifier: workspace:^
+        version: link:../../packages/session/session-projection-cache
       '@deepseek-ai/dsh-session-query':
         specifier: workspace:^
         version: link:../../packages/session-query/session-query
@@ -8909,12 +8960,33 @@ importers:
       '@deepseek-ai/dsh-session-reference':
         specifier: workspace:^
         version: link:../../packages/context/session-reference
+      '@deepseek-ai/dsh-session-stats':
+        specifier: workspace:^
+        version: link:../../packages/session/session-stats
+      '@deepseek-ai/dsh-session-telemetry':
+        specifier: workspace:^
+        version: link:../../packages/session/session-telemetry
+      '@deepseek-ai/dsh-session-telemetry-otel':
+        specifier: workspace:^
+        version: link:../../packages/session/session-telemetry-otel
       '@deepseek-ai/dsh-session-title':
         specifier: workspace:^
         version: link:../../packages/session/session-title
+      '@deepseek-ai/dsh-session-title-all-prompts-llm':
+        specifier: workspace:^
+        version: link:../../packages/session/session-title-all-prompts-llm
+      '@deepseek-ai/dsh-session-title-first-prompt-llm':
+        specifier: workspace:^
+        version: link:../../packages/session/session-title-first-prompt-llm
+      '@deepseek-ai/dsh-session-title-llm':
+        specifier: workspace:^
+        version: link:../../packages/session/session-title-llm
       '@deepseek-ai/dsh-settings':
         specifier: workspace:^
         version: link:../../packages/settings/settings
+      '@deepseek-ai/dsh-settings-file':
+        specifier: workspace:^
+        version: link:../../packages/settings/settings-file
       '@deepseek-ai/dsh-shell':
         specifier: workspace:^
         version: link:../../packages/shell/shell
@@ -8924,18 +8996,45 @@ importers:
       '@deepseek-ai/dsh-skill':
         specifier: workspace:^
         version: link:../../packages/skill/skill
+      '@deepseek-ai/dsh-skill-badge':
+        specifier: workspace:^
+        version: link:../../packages/skill/skill-badge
       '@deepseek-ai/dsh-skill-filesystem':
         specifier: workspace:^
         version: link:../../packages/skill/skill-filesystem
       '@deepseek-ai/dsh-spill':
         specifier: workspace:^
         version: link:../../packages/spill/spill
+      '@deepseek-ai/dsh-spill-local':
+        specifier: workspace:^
+        version: link:../../packages/spill/spill-local
+      '@deepseek-ai/dsh-spill-policy':
+        specifier: workspace:^
+        version: link:../../packages/spill/spill-policy
+      '@deepseek-ai/dsh-storage':
+        specifier: workspace:^
+        version: link:../../packages/storage/storage
+      '@deepseek-ai/dsh-storage-domain':
+        specifier: workspace:^
+        version: link:../../packages/storage/storage-domain
+      '@deepseek-ai/dsh-storage-json':
+        specifier: workspace:^
+        version: link:../../packages/storage/storage-json
+      '@deepseek-ai/dsh-storage-sqlite':
+        specifier: workspace:^
+        version: link:../../packages/storage/storage-sqlite
       '@deepseek-ai/dsh-subagent':
         specifier: workspace:^
         version: link:../../packages/subagent/subagent
       '@deepseek-ai/dsh-subagent-acp':
         specifier: workspace:^
         version: link:../../packages/subagent/subagent-acp
+      '@deepseek-ai/dsh-subagent-claude-code':
+        specifier: workspace:^
+        version: link:../../packages/subagent/subagent-claude-code
+      '@deepseek-ai/dsh-subagent-codex':
+        specifier: workspace:^
+        version: link:../../packages/subagent/subagent-codex
       '@deepseek-ai/dsh-subagent-fork-in-process':
         specifier: workspace:^
         version: link:../../packages/subagent/subagent-fork-in-process
@@ -8960,9 +9059,15 @@ importers:
       '@deepseek-ai/dsh-terminal-bash':
         specifier: workspace:^
         version: link:../../packages/terminal/terminal-bash
+      '@deepseek-ai/dsh-time-context':
+        specifier: workspace:^
+        version: link:../../packages/context/time-context
       '@deepseek-ai/dsh-timeout':
         specifier: workspace:^
         version: link:../../packages/util/timeout
+      '@deepseek-ai/dsh-tmux-context':
+        specifier: workspace:^
+        version: link:../../packages/context/tmux-context
       '@deepseek-ai/dsh-token-meter':
         specifier: workspace:^
         version: link:../../packages/llm/token-meter
@@ -8993,9 +9098,21 @@ importers:
       '@deepseek-ai/dsh-tool-jobs':
         specifier: workspace:^
         version: link:../../packages/jobs/tool-jobs
+      '@deepseek-ai/dsh-tool-lsp':
+        specifier: workspace:^
+        version: link:../../packages/lsp/tool-lsp
+      '@deepseek-ai/dsh-tool-pwsh':
+        specifier: workspace:^
+        version: link:../../packages/shell/tool-pwsh
+      '@deepseek-ai/dsh-tool-pwsh-persistent':
+        specifier: workspace:^
+        version: link:../../packages/shell/tool-pwsh-persistent
       '@deepseek-ai/dsh-tool-ralph':
         specifier: workspace:^
         version: link:../../packages/workflow/tool-ralph
+      '@deepseek-ai/dsh-tool-session-query':
+        specifier: workspace:^
+        version: link:../../packages/session-query/tool-session-query
       '@deepseek-ai/dsh-tool-skill':
         specifier: workspace:^
         version: link:../../packages/skill/tool-skill
@@ -9008,6 +9125,12 @@ importers:
       '@deepseek-ai/dsh-tool-subagent-control':
         specifier: workspace:^
         version: link:../../packages/subagent/tool-subagent-control
+      '@deepseek-ai/dsh-tool-subagent-report':
+        specifier: workspace:^
+        version: link:../../packages/subagent/tool-subagent-report
+      '@deepseek-ai/dsh-tool-terminal':
+        specifier: workspace:^
+        version: link:../../packages/terminal/tool-terminal
       '@deepseek-ai/dsh-tool-todo':
         specifier: workspace:^
         version: link:../../packages/todo/tool-todo
@@ -9050,6 +9173,9 @@ importers:
       '@deepseek-ai/dsh-workflow-worker-thread':
         specifier: workspace:^
         version: link:../../packages/workflow/workflow-worker-thread
+      '@deepseek-ai/dsh-workspace':
+        specifier: workspace:^
+        version: link:../../packages/workspace/workspace
       '@deepseek-ai/schemastery':
         specifier: link:../../vendor/schemastery
         version: link:../../vendor/schemastery
