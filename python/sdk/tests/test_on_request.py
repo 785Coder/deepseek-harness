@@ -165,10 +165,10 @@ for line in sys.stdin:
 
     with DeepSeekHarness(
         DeepSeekHarnessConfig(
-            launch_args_override=(sys.executable, str(script)),
             cwd=str(tmp_path),
             env={"ANSWER_DUMP": str(answer_dump)},
-        )
+        ),
+        _launch_args=(sys.executable, str(script)),
     ) as harness:
         result = harness.run("ask me", session_id="main", on_request=on_request)
 
