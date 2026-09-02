@@ -8,7 +8,7 @@
  * @module @deepseek-ai/dsh-sdk-protocol/types
  */
 
-import type { CallId, ContentBlock } from '@deepseek-ai/dsh-llm'
+import type { ContentBlock, ReasoningEffortId, ToolCallId } from '@deepseek-ai/dsh-llm'
 import type { SessionEvent } from '@deepseek-ai/dsh-session'
 import type { SubagentStopReason } from '@deepseek-ai/dsh-subagent'
 import type { ApprovalOutcome } from '@deepseek-ai/dsh-user-approval/types'
@@ -22,6 +22,8 @@ export interface InitializeParams {
   provider: string
   /** Model name every SDK-created agent runs on (the server may mount a fallback adapter; see `HarnessSdkJsonRpcServer.initialize`). */
   model: string
+  /** Optional adapter-owned reasoning effort for the selected provider/model route. */
+  reasoningEffort?: ReasoningEffortId
   /** Optional positive output-token cap inherited by SDK-created agents and their in-process descendants. */
   maxTokens?: number
 }
@@ -37,8 +39,20 @@ export interface SessionPromptParams {
   /** The SDK-side session id; an unknown id lazily creates the agent+session pair. */
   sessionId: string
   /** The prompt content blocks, sent verbatim as the user message. */
-  contentBlocks: ContentBlock[]
+  contentBlocks: SdkPromptContentBlock[]
 }
+
+/** Inline raster input admitted into the runtime's durable attachment store. */
+export interface SdkEncodedImageBlock {
+  type: 'image'
+  /** Canonical base64-encoded raster bytes. */
+  data: string
+  /** Declared raster MIME type, verified during admission. */
+  mimeType: 'image/png' | 'image/jpeg' | 'image/webp' | 'image/gif'
+}
+
+/** SDK prompt input: ordinary durable blocks plus inline images awaiting admission. */
+export type SdkPromptContentBlock = ContentBlock | SdkEncodedImageBlock
 
 /** Durable enqueue receipt for one prompt. */
 export interface SessionPromptResult {
@@ -121,7 +135,7 @@ export interface SessionApprovalParams {
   /** 待批准的工具名。 */
   toolName: string
   /** 请求方持有该工具调用时的调用 id。 */
-  callId?: CallId
+  callId?: ToolCallId
   /** 请求方给出的人性化理由。 */
   reason?: string
 }

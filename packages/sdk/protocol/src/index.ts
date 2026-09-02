@@ -16,6 +16,8 @@ export type {
   HarnessSdkServerRequestMap,
   InitializeParams,
   InitializeResult,
+  SdkEncodedImageBlock,
+  SdkPromptContentBlock,
   SdkRunStatus,
   SessionEventNotification,
   SessionStatusNotification,

@@ -1,6 +1,6 @@
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { Context } from '@deepseek-ai/cordis'
-import { CallId } from '@deepseek-ai/dsh-llm'
+import { ToolCallId } from '@deepseek-ai/dsh-llm'
 import { SessionId } from '@deepseek-ai/dsh-session'
 import type { JsonRpcTransportPeer } from '@deepseek-ai/dsh-sdk-protocol'
 import type { ApprovalRequest } from '@deepseek-ai/dsh-user-approval'
@@ -58,7 +58,13 @@ function makeFakeContext(agents: ReadonlyMap<string, Agent>, approvalMounted: bo
       }),
       get: (id: SessionId) => agents.get(String(id)),
     },
-    get: (name: string) => (name === 'approval' ? (approvalMounted ? {} : undefined) : undefined),
+    get: (name: string) => {
+      if (name === 'approval') return approvalMounted ? {} : undefined
+      if (name === 'llm') {
+        return { listProviders: () => [{ id: 'mock', name: 'Mock' }], resolveCallConfig: vi.fn(async (config: unknown) => config) }
+      }
+      return undefined
+    },
   } as unknown as Context
   return { ctx, handlers, disposers, on }
 }
@@ -96,6 +102,11 @@ function createdHandlerOf(fake: FakeContext): (session: CreatedSession) => void 
 
 const fallbackNext = (): Promise<ApprovalOutcome> => Promise.resolve('unavailable')
 
+/** Initialize the handshake so `prompt` passes the server's readiness guard. */
+async function initializeServer(server: HarnessSdkJsonRpcServer): Promise<void> {
+  await server.initialize({ cwd: '.', provider: 'mock', model: 'mock' })
+}
+
 describe('HarnessSdkJsonRpcServer approval relay', () => {
   it('relays an approval request for an owned session over the wire', async () => {
     const agent = makeAgent('main')
@@ -103,6 +114,7 @@ describe('HarnessSdkJsonRpcServer approval relay', () => {
     const transport = new RecordingTransport()
     const server = new HarnessSdkJsonRpcServer(fake.ctx, transport)
     // createSession 经 prompt 把 'main' 计入 ownedSessionIds。
+    await initializeServer(server)
     await server.prompt({ sessionId: 'main', contentBlocks: [{ type: 'text', text: 'hello' }] })
 
     expect(fake.on).toHaveBeenCalledWith('approval/request', expect.any(Function))
@@ -112,7 +124,7 @@ describe('HarnessSdkJsonRpcServer approval relay', () => {
     const outcome = await handler({
       agent,
       toolName: 'bash',
-      callId: CallId('c1'),
+      callId: ToolCallId('c1'),
       reason: 'escalate',
       signal,
     }, next)
@@ -139,6 +151,7 @@ describe('HarnessSdkJsonRpcServer approval relay', () => {
     const fake = makeFakeContext(new Map([['main', agent]]), true)
     const transport = new RecordingTransport()
     const server = new HarnessSdkJsonRpcServer(fake.ctx, transport)
+    await initializeServer(server)
     await server.prompt({ sessionId: 'main', contentBlocks: [{ type: 'text', text: 'hello' }] })
 
     const outcome = await approvalHandlerOf(fake)({ agent, toolName: 'bash' }, vi.fn(fallbackNext))
@@ -176,6 +189,7 @@ describe('HarnessSdkJsonRpcServer approval relay', () => {
     const fake = makeFakeContext(new Map([['main', main], ['child', child]]), true)
     const transport = new RecordingTransport()
     const server = new HarnessSdkJsonRpcServer(fake.ctx, transport)
+    await initializeServer(server)
     await server.prompt({ sessionId: 'main', contentBlocks: [{ type: 'text', text: 'hello' }] })
 
     // 驱动 session/created：父 session 已归属 → 子 session 继承归属。
@@ -196,6 +210,7 @@ describe('HarnessSdkJsonRpcServer approval relay', () => {
     const fake = makeFakeContext(new Map([['main', main], ['orphan-child', orphanChild]]), true)
     const transport = new RecordingTransport()
     const server = new HarnessSdkJsonRpcServer(fake.ctx, transport)
+    await initializeServer(server)
     await server.prompt({ sessionId: 'main', contentBlocks: [{ type: 'text', text: 'hello' }] })
     // 父 session 'ghost' 不是归属的 → 子 session 不继承。
     createdHandlerOf(fake)({ id: SessionId('orphan-child'), header: { parentSession: SessionId('ghost') } })
@@ -224,6 +239,7 @@ describe('HarnessSdkJsonRpcServer approval relay', () => {
     const agent = makeAgent('main')
     const fake = makeFakeContext(new Map([['main', agent]]), true)
     const server = new HarnessSdkJsonRpcServer(fake.ctx, new RecordingTransport())
+    await initializeServer(server)
     await server.prompt({ sessionId: 'main', contentBlocks: [{ type: 'text', text: 'hello' }] })
 
     await server.shutdown()
