@@ -29,9 +29,11 @@ import type {
   SubagentStartedNotification,
 } from '@deepseek-ai/dsh-sdk-protocol'
 import type { ApprovalOutcome } from '@deepseek-ai/dsh-user-approval/types'
-// Side-effect type import: resolves the `approval/request` waterfall and
-// `ctx.get('approval')` without a value dependency on the seam (optional composition).
+// Side-effect type import: resolves the `approval/request` and
+// `user-questions/request` waterfalls and their `ctx.get(...)` lookups without
+// a value dependency on either seam (optional composition).
 import type {} from '@deepseek-ai/dsh-user-approval'
+import type {} from '@deepseek-ai/dsh-user-questions'
 import type { AskUserQuestionAnswer } from '@deepseek-ai/dsh-user-questions/types'
 
 interface SessionRecord {
