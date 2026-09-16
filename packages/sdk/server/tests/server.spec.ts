@@ -188,8 +188,12 @@ describe('HarnessSdkJsonRpcServer', () => {
     const persistedText = async (): Promise<string> => {
       const inspectCtx = await makeHarness(storageDir)
       try {
-        const inspection = await inspectCtx.sessionPersistence.load(SessionId('resumable'))
-        return JSON.stringify(inspection.events)
+        const handle = await inspectCtx.sessionPersistence.open(SessionId('resumable'), 'read')
+        try {
+          return JSON.stringify((await handle.read()).events)
+        } finally {
+          await handle.close()
+        }
       } finally {
         await inspectCtx.fiber.dispose()
       }

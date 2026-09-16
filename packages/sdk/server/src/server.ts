@@ -333,7 +333,7 @@ export class HarnessSdkJsonRpcServer {
     }
     const persistence = this.ctx.get('sessionPersistence')
     const handle = persistence !== undefined
-      && typeof persistence.listSnapshots === 'function'
+      && typeof persistence.list === 'function'
       && await this.hasPersistedLog(persistence, id)
       ? await this.ctx.agents.resume({ resumeSessionId: id, agentOptions })
       : await this.ctx.agents.create({ sessionId: id, meta: { cwd: this.cwd }, agentOptions })
@@ -346,7 +346,7 @@ export class HarnessSdkJsonRpcServer {
   }
 
   private async hasPersistedLog(persistence: SessionPersistence, id: SessionId): Promise<boolean> {
-    const snapshots = await persistence.listSnapshots()
+    const snapshots = await persistence.list()
     return snapshots.some(snapshot => snapshot.header.id === id)
   }
 
