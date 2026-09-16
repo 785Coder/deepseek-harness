@@ -33,7 +33,7 @@ Wire one JSON-RPC 2.0 message per `\n`-terminated line over byte streams you own
 
 ### The SDK methods
 
-Both wire ends share one method set: three client-to-server requests and four server-to-client notifications.
+Both wire ends share one method set: three client-to-server requests, four server-to-client notifications, and two server-to-client requests that relay `ask_user_question` and `ctx.approval`.
 
 | Direction | Method | Payload types |
 |---|---|---|
@@ -47,7 +47,7 @@ Both wire ends share one method set: three client-to-server requests and four se
 | server→client | `session/question` | `SessionQuestionParams` → `AskUserQuestionAnswer` (relay of `ask_user_question`) |
 | server→client | `session/approval` | `SessionApprovalParams` → `ApprovalOutcome` (relay of `ctx.approval`) |
 
-`HarnessSdkRequestMap`, `HarnessSdkServerRequestMap`, and `HarnessSdkNotificationMap` index these by method name; the package root exports them together with the transport. When the `approval` service is mounted, the server relays approval requests for the sessions it owns to the client over `session/approval`.
+`HarnessSdkRequestMap`, `HarnessSdkServerRequestMap`, and `HarnessSdkNotificationMap` index these shapes by method name; the package root exports them together with the transport. When the `approval` service is mounted, the server relays approval requests for the sessions it owns to the client over `session/approval`, and `ask_user_question` relays over `session/question`.
 
 ### Payload semantics
 
@@ -114,7 +114,7 @@ None; this package neither assembles nor sends a provider request.
 These limits define what the protocol does not cover or promise. They are current package constraints, not a comparison with other wire formats or a task backlog.
 
 - **No protocol-version negotiation** — the handshake carries only `serverInfo.version` (`0.0.1`, unvalidated by clients); pre-release stance, no compatibility promise.
-- **No cancel or session-close methods** — a client abandons a turn by closing the runtime process; see the [`dsh-sdk-jsonrpc-server` README](../server/README.md).
+- **No cancel or session-close methods** — a client abandons a turn by closing the runtime process; see the [`dsh-sdk-jsonrpc-server`](../server/README.md).
 
 <a id="dev-note"></a>
 ### Dev Note

@@ -33,7 +33,7 @@ kind: "package-library"
 
 ### SDK 方法
 
-两个协议端共享同一套方法：三个客户端到服务端请求与四个服务端到客户端通知。
+两个协议端共享同一套方法：三个客户端到服务端请求、四个服务端到客户端通知，以及两个用于中继 `ask_user_question` 与 `ctx.approval` 的服务端到客户端请求。
 
 | 方向 | 方法 | 载荷类型 |
 |---|---|---|
@@ -47,7 +47,7 @@ kind: "package-library"
 | server→client | `session/question` | `SessionQuestionParams` → `AskUserQuestionAnswer`（`ask_user_question` 的中继） |
 | server→client | `session/approval` | `SessionApprovalParams` → `ApprovalOutcome`（`ctx.approval` 的中继） |
 
-`HarnessSdkRequestMap`、`HarnessSdkServerRequestMap` 与 `HarnessSdkNotificationMap` 按方法名索引这些类型；包根与传输一起导出它们。当 `approval` 服务已挂载时，服务端会把本服务端所拥有 session 的批准请求经 `session/approval` 中继给客户端。
+`HarnessSdkRequestMap`、`HarnessSdkServerRequestMap` 与 `HarnessSdkNotificationMap` 按方法名索引这些结构；包根与传输一起导出它们。当 `approval` 服务已挂载时，服务端会把本服务端所拥有 session 的批准请求经 `session/approval` 中继给客户端，`ask_user_question` 则经 `session/question` 中继。
 
 ### 载荷语义
 
@@ -114,7 +114,7 @@ kind: "package-library"
 这些限制说明协议未覆盖或未承诺的内容。它们是当前包约束，不是与其他协议格式的对比或任务积压。
 
 - **无协议版本协商**——握手只携带 `serverInfo.version`（`0.0.1`，客户端不校验）；处于预发布阶段，无兼容承诺。
-- **无取消与会话关闭方法**——客户端放弃轮次的方式是关闭运行时进程；见 [`dsh-sdk-jsonrpc-server` README](../server/README.zh.md)。
+- **无取消与会话关闭方法**——客户端放弃轮次的方式是关闭运行时进程；见 [`dsh-sdk-jsonrpc-server`](../server/README.zh.md)。
 
 <a id="dev-note"></a>
 ### 开发备注
