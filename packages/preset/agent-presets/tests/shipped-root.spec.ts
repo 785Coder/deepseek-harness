@@ -9,7 +9,7 @@
  * suite: the derived writable root is resolved in the constructor.
  */
 
-import { mkdtemp, readFile } from 'node:fs/promises'
+import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -24,16 +24,19 @@ import AgentPresets, { SHIPPED_PRESET_ROOT, type Config } from '@deepseek-ai/dsh
 const FIXTURES = join(dirname(fileURLToPath(import.meta.url)), 'fixtures')
 const SYSTEM_ROOT = join(FIXTURES, 'system')
 
+let home: string
 let previousHome: string | undefined
 
 beforeEach(async () => {
   previousHome = process.env.DSH_HOME
-  process.env.DSH_HOME = await mkdtemp(join(tmpdir(), 'dsh-shipped-root-'))
+  home = await mkdtemp(join(tmpdir(), 'dsh-shipped-root-'))
+  process.env.DSH_HOME = home
 })
 
-afterEach(() => {
+afterEach(async () => {
   if (previousHome === undefined) delete process.env.DSH_HOME
   else process.env.DSH_HOME = previousHome
+  await rm(home, { recursive: true, force: true })
 })
 
 /** Boot a roster with the shipped root left to the plugin's default. */
@@ -138,14 +141,22 @@ describe('the shipped preset root', () => {
     }
   })
 
-  it('omits the general workflow tool only from PTC while retaining Ralph infrastructure', async () => {
+  it('omits the general workflow tool and its unused engine only from PTC', async () => {
     const ptc = await shippedEntries('ptc')
     expect(findEntry(ptc, 'tool-workflow')?.disabled).toBe(true)
-    expect(findEntry(ptc, 'workflow-worker-thread')?.disabled).not.toBe(true)
-    expect(findEntry(ptc, 'tool-ralph')?.disabled).not.toBe(true)
+    expect(findEntry(ptc, 'workflow-ptc')?.disabled).toBe(true)
 
     for (const id of ['standard', 'cordis']) {
-      expect(findEntry(await shippedEntries(id), 'tool-workflow')?.disabled, id).not.toBe(true)
+      const entries = await shippedEntries(id)
+      expect(findEntry(entries, 'tool-workflow')?.disabled, id).not.toBe(true)
+      expect(findEntry(entries, 'workflow-ptc')?.disabled, id).not.toBe(true)
     }
+  })
+
+  it('disables the ralph tool in every shipped preset that carries it', async () => {
+    for (const id of ['cordis', 'ptc', 'standard']) {
+      expect(findEntry(await shippedEntries(id), 'tool-ralph')?.disabled, id).toBe(true)
+    }
+    expect(findEntry(await shippedEntries('minimal'), 'tool-ralph')).toBeUndefined()
   })
 })

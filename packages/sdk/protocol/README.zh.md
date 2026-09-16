@@ -1,5 +1,5 @@
 ---
-description: "面向客户端与服务端实现者的 SDK 协议格式说明：Harness 运行时与其 SDK 客户端之间使用的按换行分帧 JSON-RPC 传输，以及具名的请求、结果与通知类型。"
+description: "面向客户端与服务端实现者的 SDK 协议格式（wire format）说明：Harness 运行时与其 SDK 客户端之间使用的按换行分帧 JSON-RPC 传输，以及具名的请求、结果与通知类型。"
 kind: "package-library"
 ---
 
@@ -25,7 +25,7 @@ kind: "package-library"
 <a id="use-this-package"></a>
 ## 使用本包
 
-当你构建或调试 SDK 协议端——服务插件、客户端库或说该协议的自定义工具——时使用本包。它为你提供一个在调用方持有的字节流上承载 JSON-RPC 2.0 的传输，以及每个 SDK 方法与通知的类型化结构。
+当你构建或调试 SDK 协议端——服务插件、客户端库或使用该协议的自定义工具——时使用本包。它为你提供一个在调用方持有的字节流上承载 JSON-RPC 2.0 的传输，以及每个 SDK 方法与通知的类型化结构。
 
 ### 分帧与传输
 
@@ -41,7 +41,7 @@ kind: "package-library"
 | client→server | `session/prompt` | `SessionPromptParams` → `SessionPromptResult`（持久入队回执） |
 | client→server | `shutdown` | 无参数 → `{}` |
 | server→client | `session.event` | `SessionEventNotification`（运行时内每个会话，不过滤） |
-| server→client | `session.status` | `SessionStatusNotification`（整个 agent 的 `running`/`idle` 转换） |
+| server→client | `session.status` | `SessionStatusNotification`（整个 agent（智能体）的 `running`/`idle` 转换） |
 | server→client | `subagent.started` | `SubagentStartedNotification` |
 | server→client | `subagent.finished` | `SubagentFinishedNotification`（仅进程内运行） |
 | server→client | `session/question` | `SessionQuestionParams` → `AskUserQuestionAnswer`（`ask_user_question` 的中继） |
@@ -65,7 +65,7 @@ kind: "package-library"
 
 ### 设计理念
 
-本包建立在一个分离之上：两个协议端共用一个按换行分帧的传输类，以及按方法索引协议类型的具名类型。包根是唯一的导入面——源模块不支持深层导入。它是没有插件、配置或注册的纯库；服务插件与客户端负责其周围的一切行为。
+本包采用一种职责分离设计：两个协议端共用一个按换行分帧的传输类，并以具名类型索引协议方法。包根是唯一的导入面——源模块不支持深层导入。它是没有插件、配置或注册的纯库；服务插件与客户端负责其周围的一切行为。
 
 ### 源码地图
 
@@ -74,7 +74,7 @@ kind: "package-library"
 | [`src/transport.ts`](src/transport.ts) | `JsonRpcLineTransport`：行分帧、请求/响应/通知分发、错误映射、挂起请求记账 |
 | [`src/types.ts`](src/types.ts) | 具名请求/结果与通知载荷类型，按方法索引 |
 | [`src/index.ts`](src/index.ts) | 消费方接口：传输与具名协议类型 |
-| — | 不发布运行时不变式伴生入口；纯协议库不持有事件流。 |
+| — | 不发布运行时不变式伴生入口；这是一个由传输类和类型声明组成的纯协议库，自身没有事件流或可变数据关系；两个协议端各自负责其协议行为。 |
 
 ### 帧分发
 
@@ -91,9 +91,8 @@ kind: "package-library"
 
 - [JSON-RPC 服务插件](../server/README.zh.md) — 通过 stdio 服务该协议的运行时插件。
 - [TypeScript SDK 客户端](../client/README.zh.md) — 驱动该协议的客户端。
-- [Python SDK](../../../python/README.zh.md) — 复现这些结构的 Python 对侧实现。
+- [Python SDK](../../../python/README.zh.md) — 复现这些结构的 Python 对应实现。
 - [SDK 应用组合包](../../bundle/sdk-app/README.zh.md) — 启动服务器的 `dsh --profile sdk` 应用。
-- [TypeScript SDK 与 SDK subagent 后端决策](../../../.agents/notes/implemented/feature/2026-07-27-typescript-sdk-and-sdk-subagent-backend.zh.md) — 该协议所服务的客户端约定。
 
 -----
 
