@@ -98,9 +98,14 @@ def test_bundled_runtime_surfaces_unbundled_plugin_failure(
     client = _client(tmp_path, mode, monkeypatch, patch)
     client.start()
     try:
-        with pytest.raises((JsonRpcError, TransportClosedError, TimeoutError)) as excinfo:
-            client.initialize(provider="deepseek-official", cwd=str(tmp_path), model="deepseek-v4-pro")
+        init = client.initialize(provider="deepseek-official", cwd=str(tmp_path), model="deepseek-v4-pro")
     finally:
         client.close()
 
-    assert "@deepseek-ai/dsh-does-not-exist" in str(excinfo.value)
+    assert init.serverInfo is not None
+    # The nontransactional Loader keeps the runtime serving: the unbundled
+    # plugin is reported as an activation warning on stderr, not a startup
+    # failure that aborts initialize.
+    stderr = "\n".join(client._stderr_lines)
+    assert "@deepseek-ai/dsh-does-not-exist" in stderr
+    assert "did not activate" in stderr
