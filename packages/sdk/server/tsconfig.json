@@ -18,7 +18,7 @@
       "path": "../../llm/llm"
     },
     {
-      "path": "../../llm/llm-deepseek"
+      "path": "../../llm/llm-deepseek-api-key"
     },
     {
       "path": "../../core/agent"
@@ -28,6 +28,9 @@
     },
     {
       "path": "../../core/session"
+    },
+    {
+      "path": "../../session/session-persistence"
     },
     {
       "path": "../../interaction/user-questions"

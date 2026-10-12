@@ -225,12 +225,19 @@ describe('HarnessSdkJsonRpcServer approval relay', () => {
     await server.shutdown()
   })
 
-  it('does not register the relay when approval is not mounted', async () => {
-    const fake = makeFakeContext(new Map(), false)
-    const server = new HarnessSdkJsonRpcServer(fake.ctx, new RecordingTransport())
+  it('relays owned requests even when approval mounts after the server', async () => {
+    const agent = makeAgent('main')
+    const fake = makeFakeContext(new Map([['main', agent]]), false)
+    const transport = new RecordingTransport()
+    const server = new HarnessSdkJsonRpcServer(fake.ctx, transport)
+    await initializeServer(server)
+    await server.prompt({ sessionId: 'main', contentBlocks: [{ type: 'text', text: 'hello' }] })
 
-    expect(fake.handlers.has('approval/request')).toBe(false)
-    expect(fake.on).not.toHaveBeenCalledWith('approval/request', expect.any(Function))
+    const next = vi.fn<() => Promise<ApprovalOutcome>>(fallbackNext)
+    const outcome = await approvalHandlerOf(fake)({ agent, toolName: 'bash' }, next)
+    expect(outcome).toBe('allowed-once')
+    expect(next).not.toHaveBeenCalled()
+    expect(transport.requests).toHaveLength(1)
 
     await server.shutdown()
   })
@@ -244,9 +251,8 @@ describe('HarnessSdkJsonRpcServer approval relay', () => {
 
     await server.shutdown()
 
-    // 5 个注册（session/event、agent/status、session/created、subagent/end、approval/request）
-    // 的 disposer 全部被调用。
-    expect(fake.disposers).toHaveLength(5)
+    // Both optional relays remain subscribed independently of mount order.
+    expect(fake.disposers).toHaveLength(6)
     for (const disposer of fake.disposers) {
       expect(disposer).toHaveBeenCalledOnce()
     }

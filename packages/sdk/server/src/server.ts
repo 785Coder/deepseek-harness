@@ -16,7 +16,7 @@ import type { SessionId } from '@deepseek-ai/dsh-session'
 import type { SessionPersistence } from '@deepseek-ai/dsh-session-persistence'
 import type SubagentRuntime from '@deepseek-ai/dsh-subagent'
 import type { SubagentRunEndInfo } from '@deepseek-ai/dsh-subagent'
-import * as LlmDeepSeek from '@deepseek-ai/dsh-llm-deepseek'
+import * as LlmDeepSeek from '@deepseek-ai/dsh-llm-deepseek-api-key'
 import type {
   InitializeParams,
   InitializeResult,
@@ -135,44 +135,39 @@ export class HarnessSdkJsonRpcServer {
         childSessionId: String(info.id),
         status: successStatus(info.stopReason, serverOptions),
         stopReason: info.stopReason,
-        ...(info.lastAssistantMessage === undefined ? {} : { lastAssistantMessage: info.lastAssistantMessage }),
+        ...(info.lastAssistantMessage === undefined
+          ? {}
+          : { lastAssistantMessage: [...info.lastAssistantMessage] }),
       }
       transport.notify('subagent.finished', payload)
     }))
     // SDK 提问中继：把 agent 作用域的 user-questions/request waterfall 经 JSON-RPC
     // 交给 SDK 客户端应答；非本服务端拥有的 session 委托给下游 answerer 处理。
-    const userQuestions = this.ctx.get('userQuestions')
-    if (userQuestions !== undefined) {
-      this.disposers.push(this.ctx.on('user-questions/request', (request, next) => {
-        const sessionId = request.agent?.id
-        if (sessionId === undefined || !this.ownedSessionIds.has(String(sessionId))) return next()
-        return this.transport.request(
-          'session/question',
-          { sessionId: String(sessionId), questions: request.questions },
-          request.signal,
-          // The peer resolves an untyped wire result; the client answers this
-          // method with an AskUserQuestionAnswer, the only shape ask() accepts.
-        ) as Promise<AskUserQuestionAnswer>
-      }))
-    }
+    // Optional siblings can activate after this server. Register the relay
+    // before their first request rather than depending on Loader mount order.
+    this.disposers.push(this.ctx.on('user-questions/request', (request, next) => {
+      const sessionId = request.agent?.id
+      if (sessionId === undefined || !this.ownedSessionIds.has(String(sessionId))) return next()
+      return this.transport.request(
+        'session/question',
+        { sessionId: String(sessionId), questions: request.questions },
+        request.signal,
+      ) as Promise<AskUserQuestionAnswer>
+    }))
     // SDK 批准中继：把 ctx.approval 的 waterfall 经 JSON-RPC 交给 SDK 客户端应答。
-    const approval = this.ctx.get('approval')
-    if (approval !== undefined) {
-      this.disposers.push(this.ctx.on('approval/request', (req, next) => {
-        if (!this.ownedSessionIds.has(String(req.agent.session.id))) return next()
-        return this.transport.request(
-          'session/approval',
-          {
-            sessionId: String(req.agent.session.id),
-            toolName: req.toolName,
-            ...(req.callId === undefined ? {} : { callId: req.callId }),
-            ...(req.reason === undefined ? {} : { reason: req.reason }),
-          },
-          req.signal,
-          // 客户端以 ApprovalOutcome 应答该方法；服务层会规整异常返回为 fail-closed。
-        ) as Promise<ApprovalOutcome>
-      }))
-    }
+    this.disposers.push(this.ctx.on('approval/request', (req, next) => {
+      if (!this.ownedSessionIds.has(String(req.agent.session.id))) return next()
+      return this.transport.request(
+        'session/approval',
+        {
+          sessionId: String(req.agent.session.id),
+          toolName: req.toolName,
+          ...(req.callId === undefined ? {} : { callId: req.callId }),
+          ...(req.reason === undefined ? {} : { reason: req.reason }),
+        },
+        req.signal,
+      ) as Promise<ApprovalOutcome>
+    }))
   }
 
   /**
@@ -323,7 +318,7 @@ export class HarnessSdkJsonRpcServer {
     // No preset composition: this server's compositions keep the model-facing
     // rows in the host plane, so this agent reads them from the global layer. A
     // deployment that configures a roster has to join one here first
-    // (@deepseek-ai/dsh-agent-presets README, "Composing a child agent").
+    // (@deepseek-ai/dsh-agent-preset-registry README, "Composing a child agent").
     const id = brandString<SessionId>(sessionId)
     const agentOptions: AgentOptions = {
       provider: this.provider,
