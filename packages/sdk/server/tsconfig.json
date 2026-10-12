@@ -8,6 +8,8 @@
     "src"
   ],
   "references": [
+    { "path": "../../api/job-controller/tsconfig.host.json" },
+    { "path": "../../jobs/jobs" },
     {
       "path": "../../../vendor/cordis"
     },
@@ -18,7 +20,7 @@
       "path": "../../llm/llm"
     },
     {
-      "path": "../../llm/llm-deepseek"
+      "path": "../../llm/llm-deepseek-api-key"
     },
     {
       "path": "../../core/agent"
@@ -28,6 +30,9 @@
     },
     {
       "path": "../../core/session"
+    },
+    {
+      "path": "../../session/session-persistence"
     },
     {
       "path": "../../interaction/user-questions"

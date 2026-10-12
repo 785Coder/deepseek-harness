@@ -47,6 +47,14 @@ Stdout carries only JSON-RPC frames, so clients can parse every byte; diagnostic
 
 `initialize` is the runtime-readiness boundary: when the server is mounted by a Loader composition, it waits for the current plugin tree to settle before replying, so async sibling capabilities such as initial MCP tool discovery are visible to the first prompt. The handshake returns the wire-stable identity `deepseek-harness-sdk-runtime`. The server validates the provider/model route and optional non-empty `reasoningEffort` through the selected adapter before it stores them; omission stores no effort, so the model retains its own default. An optional positive `maxTokens` becomes the request output cap of each SDK-created agent and its in-process descendants, while omission applies the selected adapter or provider route default. JSON-RPC requests may dispatch concurrently, so `session/prompt` rejects until one `initialize` has completed successfully; clients must await the handshake before sending prompts. An accepted prompt queues one identified user message and immediately returns `{ messageId }`; the server then streams every durable fact as `session.event` and every whole-agent lifecycle transition as `session.status`. It does not assign an assistant message or `turn/end` to a prompt, and independent requests may enqueue more work on the same session. Persistence roots and persona come from the surrounding composition.
 
+This fork additionally relays SDK-owned sessions' blocking questions as `session/question` and approvals as `session/approval`; the client responds on the same JSON-RPC request id. The listeners also cover services mounted after the SDK server. Child sessions inherit approval ownership from their parent. Optional timed questions and late-answer admission are not supported by this relay. Existing persisted SDK session ids resume rather than starting a replacement conversation.
+
+### Job observation
+
+`job/list`, `job/read`, `job/subscribe`, `job/follow`, and `job/unsubscribe` expose non-consuming observations of tasks owned by an SDK-authorized session. Unowned tasks are excluded. `job.frame` carries sequenced data and `job.closed` reports observation termination separately from task status. Clients register subscription ids before requesting observation and return `job/ack` after consuming each frame; only one frame per subscription is outstanding. Closing an observation never kills its task. The optional registry is resolved at request time, so late-mounted jobs services are supported. Output retention and record removal can lose unread bytes; output is not durable and producer results are not consumed.
+
+The validated deployment fields are `jobMaxSubscriptions` (32), `jobAckTimeoutMs` (60000), `jobFlushMs` (100), and `jobMaxFrameBytes` (65536, a soft budget that preserves whole chunks). Slow observers time out without blocking interactive requests. Owner disposal and shutdown release observation listeners.
+
 ### Shutdown and exit
 
 The plugin answers `shutdown`, flushes the response, disposes the root context so SDK-owned agents, subscriptions, and persistence reach quiescence, then exits 0. EOF and signal exits belong to the app bin, which also disposes the root context. Unloading only this plugin stops serving without exiting the process.
@@ -75,7 +83,7 @@ The plugin is a thin presentation adapter: [`HarnessSdkJsonRpcServer`](src/serve
 
 ### Request flow
 
-Each protocol method validates its inputs and resolves the owning state before acting — `initialize` stores the SDK route, `session/prompt` resolves the live agent+session pair and queues the message, and `shutdown` disposes server-owned state to quiescence before flushing the response and exiting 0 — and a shared exit task guarantees that racing `shutdown` requests never dispose or exit twice. The dispatch lives in [src/index.ts](src/index.ts) and [src/server.ts](src/server.ts).
+Each protocol method validates its inputs and resolves the owning state before acting — `initialize` stores the SDK route, `session/prompt` resolves the live agent+session pair and queues the message, and `shutdown` flushes the response, then disposes the root context to quiescence before exiting 0 — and a shared exit task guarantees that racing `shutdown` requests never dispose or exit twice. The dispatch lives in [src/index.ts](src/index.ts) and [src/server.ts](src/server.ts).
 
 ### Teardown
 

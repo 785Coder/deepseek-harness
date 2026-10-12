@@ -55,7 +55,7 @@ tool/result      "escalated" — this one call ran under the wider mode; the gra
 
 应答者是 `approval/request` waterfall 监听器。零监听器会直接落到 `unavailable`；识别该 agent 的监听器占用先到先得的决策槽，而不识别的监听器必须调用 `next()` 委派。监听器会随其 fiber 一同 dispose（资源释放），因此卸载通道后，请求会在故障时默认被拒绝。由于兄弟插件的注册顺序不确定，部署应组合一个终端应答者，并保留 `prepend` 给「决策或委派」门禁。
 
-`ApprovalRequest` 携带发起请求的 `agent`、`toolName`、可选的精确 `callId`、人类可读的 `reason` 和可选的 `signal`。它使用 `ToolCallId` brand 而不导入依赖本 seam 的 `dsh-tools`。通道适配器可按 `callId` 关联任何更丰富的调用状态；审批请求本身不重复携带工具参数。
+`ApprovalRequest` 携带发起请求的 `agent`、`toolName`、可选的精确 `callId`、人类可读的 `reason`、可选的本地化 `displayReason` 和可选的 `signal`。它使用 `ToolCallId` brand 而不导入依赖本 seam 的 `dsh-tools`。通道适配器可按 `callId` 关联任何更丰富的调用状态；审批请求本身不重复携带工具参数。
 
 #### dsh-tools 中的 Ask 路由
 
@@ -69,7 +69,7 @@ seam 还拥有[沙箱 Agent Note](2026-07-06-sandbox.zh.md) 所描述的会话�
 
 ACP 桥只应答其会话映射所拥有的精确 agent 对象。它携带既有 `callId` 发送 `session/request_permission`，声明一次性的 allow/reject 选项，单独映射取消，并且绝不批准未知选项。不属于该桥或没有调用标识的请求会继续委派；客户端 RPC 失败会转换为 `unavailable`。钩子和 `tools/pre-execute` 决定一次调用是否需要询问。该通道是自动化客户端与其 agent 之间的机器策略，不是 ACP 展示层。
 
-应答者通过[仅面向自动化的 ACP Agent Note](../simplification/2026-07-23-acp-automation-only-protocol.zh.md)描述的桥精确 agent 归属检查进行路由，保留了[多会话 Agent Note](2026-06-14-acp-multi-session.zh.md) 要求的每会话权限归属。
+应答者通过[仅面向自动化的 ACP Agent Note](../simplification/2026-07-23-acp-automation-only-protocol.zh.md)描述的桥精确 agent 归属检查进行路由，保留了[多会话 Agent Note](../../archived/feature/2026-06-14-acp-multi-session.md) 要求的每会话权限归属。
 
 #### 审计，以及模型看到什么
 
@@ -133,7 +133,7 @@ ACP 桥只应答其会话映射所拥有的精确 agent 对象。它携带既有
 本设计复用或对照的仓库内先例：
 
 - `fs/write-intent` 门禁（`packages/fs/fs/`）——文档化的单占用决策槽 waterfall 语义（先到先得，通过 `next()` 委派），应答者约定复用了它。
-- `hook/invoked`/`hook/result`——仅日志审计对先例，`approval/asked`/`approval/decided` 沿用了它；[钩子桥 Agent Note](2026-06-30-hook-bridges.zh.md) 交付了 `permissionDecision: ask`，即第一个生产者。
+- `hook/invoked`/`hook/result`——仅日志审计对先例，`approval/asked`/`approval/decided` 沿用了它；[钩子桥 Agent Note](../../archived/feature/2026-06-30-hook-bridges.md) 交付了 `permissionDecision: ask`，即第一个生产者。
 - [拦截扩展点 Agent Note](2026-06-30-interception-extension-points.zh.md)——`tools/pre-execute` 的 `allow`/`deny`/`ask` 词汇，本 seam 服务其中的 `ask`。
-- [仅面向自动化的 ACP Agent Note](../simplification/2026-07-23-acp-automation-only-protocol.zh.md)——应答者路由时对会话映射执行的精确 agent 归属检查；[多会话 Agent Note](2026-06-14-acp-multi-session.zh.md)——本设计实现的每会话权限归属阻塞项。
+- [仅面向自动化的 ACP Agent Note](../simplification/2026-07-23-acp-automation-only-protocol.zh.md)——应答者路由时对会话映射执行的精确 agent 归属检查；[多会话 Agent Note](../../archived/feature/2026-06-14-acp-multi-session.md)——本设计实现的每会话权限归属阻塞项。
 - 机会性 `ctx.get()` 消费模式（`tool-bash` 的 owner-token 查找、loop 的持久化探测）——`dsh-tools` 消费该 seam 而不阻塞其 fiber 的方式。

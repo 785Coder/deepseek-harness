@@ -2,12 +2,12 @@
 
 import type { Context } from '@deepseek-ai/cordis'
 import { Deque } from '@deepseek-ai/dsh-deque'
+import type { AssistantStreamFrame } from '@deepseek-ai/dsh-agent'
 import {
   isAppendSurfaceEvent,
   SessionLogOffset,
   SessionSeq,
 } from '@deepseek-ai/dsh-session'
-import { isChunkRow, packChunkRuns, type ChunkRow } from '@deepseek-ai/dsh-session/chunk-rows'
 import type {
   SessionEvent,
   SessionHeader,
@@ -18,9 +18,10 @@ import type {
 import { SessionQueryError, type SessionObservation } from '@deepseek-ai/dsh-session-query'
 import type {} from '@deepseek-ai/dsh-subagent'
 import { RemoteError } from '@deepseek-ai/dsh-typert-protocol'
+import type { JsonValue } from '@deepseek-ai/dsh-util-values'
 import type {
   SessionAddress,
-  SessionChunkRun,
+  SessionAssistantStreamFrame,
   SessionEventEntry,
   SessionFollowRequest,
   SessionFollowFrame,
@@ -32,6 +33,7 @@ import type {
   SessionWireHeader,
   SessionWireEvent,
 } from './types.ts'
+import { SessionAssistantStreamAccumulator } from './assistant-stream.ts'
 
 const DEFAULT_MAX_MESSAGES = 50
 const MESSAGE_TYPES = new Set(['user/message', 'assistant/message'])
@@ -39,6 +41,7 @@ const MESSAGE_TYPES = new Set(['user/message', 'assistant/message'])
 /** Implements cold-safe history operations delegated by the Session Controller. */
 export class SessionHistoryController {
   private readonly closeFollowers = new Set<() => void>()
+  private readonly assistantStreams = new Map<SessionId, SessionAssistantStreamAccumulator>()
 
   /**
    * @param ctx - Host context carrying Session query and projection services.
@@ -48,6 +51,17 @@ export class SessionHistoryController {
     private readonly ctx: Context,
     private readonly promote: (observation: SessionObservation) => void,
   ) {
+    ctx.on('agent/assistant-stream', ({ agent, frame }) => {
+      let stream = this.assistantStreams.get(agent.session.id)
+      if (stream === undefined) {
+        stream = new SessionAssistantStreamAccumulator()
+        this.assistantStreams.set(agent.session.id, stream)
+      }
+      stream.accept(frame, cursorBeforeNext(agent.session.seq))
+    }, { global: true })
+    ctx.on('agent/disposed', ({ agent }) => {
+      this.assistantStreams.delete(agent.session.id)
+    }, { global: true })
     ctx.effect(() => () => {
       for (const close of this.closeFollowers) close()
       this.closeFollowers.clear()
@@ -88,6 +102,7 @@ export class SessionHistoryController {
       beforeSeq,
       request.maxMessages ?? DEFAULT_MAX_MESSAGES,
       throughSeq,
+      request.turnWindow,
     )
     const records = pageRecords(page.events)
     return {
@@ -100,14 +115,22 @@ export class SessionHistoryController {
    * Follow events appended after an initial cursor on one durable address.
    * @param request - durable address and last committed sequence already held by the caller.
    * @param signal - stream cancellation owned by the Remote carrier.
-   * @returns a complete opening snapshot followed by gap-free event frames.
+   * @returns a complete opening snapshot followed by gap-free durable events and opted-in assistant frames.
    */
   async *follow(request: SessionFollowRequest, signal: AbortSignal): AsyncIterable<SessionFollowFrame> {
-    validateFollowRequest(request)
+    validateHistoryWindow(request)
     const { address } = request
     const target = addressId(address)
-    const buffered = new Deque<SessionEvent>()
+    const buffered = new Deque<
+      | { readonly type: 'event'; readonly event: SessionEvent }
+      | {
+        readonly type: 'assistant-stream'
+        readonly frame: SessionAssistantStreamFrame
+        readonly ordinal: number
+      }
+    >()
     let snapshotCursor: SessionSeqCursor | undefined
+    let assistantStreamOrdinal = 0
     let wake: (() => void) | undefined
     const notify = (): void => {
       const resume = wake
@@ -122,7 +145,7 @@ export class SessionHistoryController {
     this.closeFollowers.add(close)
     const disposeEvent = this.ctx.on('session/event', (session, event) => {
       if (session.id !== target) return
-      buffered.pushBack(event)
+      buffered.pushBack({ type: 'event', event })
       notify()
     }, { global: true })
     const disposeCreated = this.ctx.on('session/created', (session) => {
@@ -130,14 +153,26 @@ export class SessionHistoryController {
       // Constructor seed events have no session/event notification. Normally
       // only the end-seed suffix is new; if persistence advanced after the
       // opening observation, replay everything beyond that snapshot cursor.
+      // oxlint-disable-next-line typescript/no-deprecated -- Existing Session history read; migration deferred.
       const suffix = session.snapshotEvents(snapshotCursor === undefined
         ? session.firstLiveSeq
         : SessionLogOffset(snapshotCursor + 1))
       for (let index = suffix.length - 1; index >= 0; index -= 1) {
-        buffered.pushFront(suffix[index] as SessionEvent)
+        buffered.pushFront({ type: 'event', event: suffix[index] as SessionEvent })
       }
       notify()
     }, { global: true })
+    const disposeAssistantStream = request.assistantStream !== true
+      ? undefined
+      : this.ctx.on('agent/assistant-stream', ({ agent, frame }) => {
+        if (agent.session.id !== target) return
+        buffered.pushBack({
+          type: 'assistant-stream',
+          frame: wireAssistantStreamFrame(frame, cursorBeforeNext(agent.session.seq)),
+          ordinal: ++assistantStreamOrdinal,
+        })
+        notify()
+      }, { global: true })
     const onAbort = (): void => { notify() }
     signal.addEventListener('abort', onAbort, { once: true })
     try {
@@ -146,16 +181,25 @@ export class SessionHistoryController {
       signal.throwIfAborted()
       const cursor = source.cursor
       snapshotCursor = cursor
-      const page = paginate(events, undefined, request.maxMessages ?? DEFAULT_MAX_MESSAGES)
+      const page = paginate(events, undefined, request.maxMessages ?? DEFAULT_MAX_MESSAGES, cursor, request.turnWindow)
+      const assistantStream = request.assistantStream === true
+        ? this.assistantStreams.get(target)?.snapshot() ?? { revision: 0 }
+        : undefined
+      // The accumulator snapshot and this watermark are synchronous. Frames
+      // through the cut are represented or superseded by that baseline,
+      // including larger revisions from a retired Agent; later revision
+      // resets reach Client continuity validation.
+      const assistantStreamOrdinalCut = assistantStreamOrdinal
       yield {
         type: 'snapshot',
-        header: wireHeader(source.header, source.inheritedEventCount),
+        header: wireHeader(source.header),
         cursor,
         records: pageRecords(page.events),
         hasMore: page.hasMore,
         projections: source.projections === undefined
           ? { asOfSeq: cursor, values: {} }
           : projectionBlock(source.projections),
+        ...assistantStream === undefined ? {} : { assistantStream },
       }
       if (address.kind === 'session' && source.source === 'prepared') {
         const promotion = source.retain()
@@ -173,19 +217,26 @@ export class SessionHistoryController {
           await new Promise<void>((resolve) => { wake = resolve })
           continue
         }
+        if (item.type === 'assistant-stream') {
+          if (item.ordinal > assistantStreamOrdinalCut) {
+            yield { type: 'assistant-stream', frame: item.frame }
+          }
+          continue
+        }
         const expectedSeq = SessionSeq(nextOffset)
-        if (item.seq < expectedSeq) continue
-        if (item.seq !== expectedSeq) {
+        if (item.event.seq < expectedSeq) continue
+        if (item.event.seq !== expectedSeq) {
           throw new RemoteError('gateway/internal', `session event stream skipped seq ${String(expectedSeq)}`, {})
         }
         nextOffset = SessionLogOffset(nextOffset + 1)
-        yield entryFor(item)
+        yield entryFor(item.event)
       }
     } finally {
       this.closeFollowers.delete(close)
       signal.removeEventListener('abort', onAbort)
       disposeCreated()
       disposeEvent()
+      disposeAssistantStream?.()
     }
   }
 
@@ -225,6 +276,22 @@ export class SessionHistoryController {
 
 }
 
+function cursorBeforeNext(nextSeq: SessionLogOffsetType): SessionSeqCursor {
+  return nextSeq === 0 ? -1 : SessionSeq(nextSeq - 1)
+}
+
+function wireAssistantStreamFrame(
+  frame: AssistantStreamFrame,
+  durableCursor: SessionSeqCursor,
+): SessionAssistantStreamFrame {
+  if (frame.type === 'start') return { ...frame, startedAfterSeq: durableCursor }
+  if (frame.type === 'end') return frame
+  return {
+    ...frame,
+    chunk: frame.chunk as JsonValue,
+  }
+}
+
 function projectionBlock(
   snapshot: NonNullable<SessionObservation['projections']>,
 ): SessionProjectionBaseline {
@@ -247,16 +314,23 @@ function validatePageRequest(request: SessionPageRequest): void {
       || Object.is(request.beforeSeq, -0))) {
     throw new RemoteError('gateway/bad-request', 'beforeSeq must be a non-negative safe integer', {})
   }
+  validateHistoryWindow(request)
+}
+
+function validateHistoryWindow(request: Pick<SessionPageRequest, 'maxMessages' | 'turnWindow'>): void {
   if (request.maxMessages !== undefined
     && (!Number.isSafeInteger(request.maxMessages) || request.maxMessages <= 0)) {
     throw new RemoteError('gateway/bad-request', 'maxMessages must be a positive safe integer', {})
   }
-}
-
-function validateFollowRequest(request: SessionFollowRequest): void {
-  if (request.maxMessages !== undefined
-    && (!Number.isSafeInteger(request.maxMessages) || request.maxMessages <= 0)) {
-    throw new RemoteError('gateway/bad-request', 'maxMessages must be a positive safe integer', {})
+  const window = request.turnWindow
+  if (window !== undefined) {
+    if (!Number.isSafeInteger(window.minMessages) || window.minMessages <= 0
+      || window.minMessages > (request.maxMessages ?? DEFAULT_MAX_MESSAGES)) {
+      throw new RemoteError('gateway/bad-request', 'turnWindow.minMessages must be a positive safe integer no greater than maxMessages', {})
+    }
+    if (!Number.isSafeInteger(window.minTurns) || window.minTurns <= 0) {
+      throw new RemoteError('gateway/bad-request', 'turnWindow.minTurns must be a positive safe integer', {})
+    }
   }
 }
 
@@ -298,7 +372,7 @@ function validateAddress(
       reason: 'unsupported',
     })
   }
-  if (identity.mode !== address.mode) {
+  if (address.mode !== 'unknown' && identity.mode !== address.mode) {
     throw new RemoteError('subagent/unauthorized', 'subagent mode does not match the supplied address', {
       childSessionId: address.childSessionId,
     })
@@ -319,13 +393,22 @@ function paginate(
   events: readonly SessionEvent[],
   beforeSeq: SessionLogOffsetType | undefined,
   maxMessages: number,
-  throughSeq: SessionSeqCursor = events.at(-1)?.seq ?? -1,
+  throughSeq: SessionSeqCursor,
+  turnWindow?: SessionPageRequest['turnWindow'],
 ): { readonly events: SessionEvent[]; readonly hasMore: boolean } {
   const end = SessionLogOffset(Math.min(throughSeq + 1, beforeSeq ?? throughSeq + 1))
   let count = 0
+  let turns = 0
   let cut = SessionLogOffset(0)
   for (let index = end - 1; index >= 0; index--) {
     const event = events[index] as SessionEvent
+    if (turnWindow !== undefined && event.type === 'turn/start') {
+      turns++
+      if (count >= turnWindow.minMessages && turns >= turnWindow.minTurns) {
+        cut = SessionLogOffset(index)
+        break
+      }
+    }
     if (!MESSAGE_TYPES.has(event.type) || !isAppendSurfaceEvent(event)) continue
     count++
     const sources = event.sourceEventSeqs
@@ -343,16 +426,9 @@ function paginate(
   return { events: events.slice(cut, end), hasMore: cut > 0 }
 }
 
-/** Translate logical Session metadata to the unchanged v0 browser wire. */
-function wireHeader(
-  header: SessionHeader,
-  inheritedEventCount: SessionLogOffsetType,
-): SessionWireHeader {
-  const { isSeeded, ...wire } = header
-  return {
-    ...wire,
-    ...isSeeded ? { seedLength: inheritedEventCount } : {},
-  }
+/** Translate current logical Session metadata to the browser wire. */
+function wireHeader(header: SessionHeader): SessionWireHeader {
+  return { ...header }
 }
 
 function entryFor(event: SessionEvent): SessionEventEntry {
@@ -363,29 +439,7 @@ function entryFor(event: SessionEvent): SessionEventEntry {
   }
 }
 
-function chunkEntryFor(row: ChunkRow): SessionChunkRun {
-  switch (row.type) {
-    case 'text-chunks':
-      return {
-        type: 'chunks',
-        event: { type: 'chunkrow/text-chunks', seq: row.seq0, time: row.time0, data: row.data },
-      }
-    case 'reasoning-chunks':
-      return {
-        type: 'chunks',
-        event: { type: 'chunkrow/reasoning-chunks', seq: row.seq0, time: row.time0, data: row.data },
-      }
-    case 'tool-call-chunks':
-      return {
-        type: 'chunks',
-        event: { type: 'chunkrow/tool-call-chunks', seq: row.seq0, time: row.time0, data: row.data },
-      }
-  }
-}
-
 /** Encode one bounded logical page without changing its pagination cut. */
 function pageRecords(events: readonly SessionEvent[]): SessionHistoryRecord[] {
-  return packChunkRuns(events).map(record => isChunkRow(record)
-    ? chunkEntryFor(record)
-    : entryFor(record))
+  return events.map(entryFor)
 }

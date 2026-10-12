@@ -60,6 +60,25 @@ describe('JsonRpcLineTransport', () => {
     b.close()
   })
 
+  it('preserves an explicit JsonRpcResponseError code and data across the wire', async () => {
+    const { a, b } = transportPair()
+    a.onRequest(async () => {
+      throw new JsonRpcResponseError(-32010, 'Job is not visible in this session', { kind: 'job-not-found' })
+    })
+    a.start()
+    b.start()
+
+    const failure = await b.request('job/read', {}).then(
+      () => { throw new Error('request unexpectedly succeeded') },
+      (error: unknown) => error,
+    )
+    expect(failure).toBeInstanceOf(JsonRpcResponseError)
+    expect(failure).toMatchObject({ code: -32010, message: 'Job is not visible in this session', data: { kind: 'job-not-found' } })
+
+    a.close()
+    b.close()
+  })
+
   it('rejects immediately on a pre-aborted signal without registering pending state', async () => {
     const { b } = transportPair()
     b.start()

@@ -15,7 +15,6 @@ import LocalSubprocessRuntime from '@deepseek-ai/dsh-subprocess-local'
 import { scopeTarget } from '@deepseek-ai/dsh-scope'
 import SubagentRuntime, { SubagentRunId } from '@deepseek-ai/dsh-subagent'
 import * as HooksClaude from '@deepseek-ai/dsh-hooks-claude-code'
-import SessionProjectionRegistry from '@deepseek-ai/dsh-session-projection'
 import { MockAdapter, textResponse, toolCallResponse } from '../../../core/agent-loop/tests/mock-adapter.ts'
 
 /**
@@ -58,7 +57,6 @@ async function harnessWithFiber(
 ): Promise<{ ctx: Context; hooks: Fiber }> {
   const ctx = new Context()
   await mountAgentLoopTestDependencies(ctx)
-  await ctx.plugin(SessionProjectionRegistry)
   await ctx.plugin(AgentLoop, { agents: [] })
   await ctx.plugin(LocalSubprocessRuntime)
   await ctx.plugin(LocalBashExecutor, { timeoutMs: 10_000 })
@@ -103,7 +101,7 @@ describe('hooks-claude-code bridge — UserPromptSubmit', () => {
 
     const adapter = new MockAdapter([textResponse('should not run')])
     const ctx = await harness(dir, adapter)
-    const agent = ctx.agentLoop.create(SessionId('a1'), { provider: 'mock', model: 'mock' })
+    const agent = await ctx.agentLoop.create(SessionId('a1'), { provider: 'mock', model: 'mock' })
     agent.followup(createUserMessage({ content: [{ type: 'text', text: 'do something' }], source: { kind: 'user' } }))
     await waitForIdle(ctx, agent)
 
@@ -124,14 +122,14 @@ describe('hooks-claude-code bridge — UserPromptSubmit', () => {
 
     const adapter = new MockAdapter([textResponse('ok')])
     const ctx = await harness(dir, adapter)
-    const agent = ctx.agentLoop.create(SessionId('a1'), { provider: 'mock', model: 'mock' })
+    const agent = await ctx.agentLoop.create(SessionId('a1'), { provider: 'mock', model: 'mock' })
     agent.followup(createUserMessage({ content: [{ type: 'text', text: 'go' }], source: { kind: 'user' } }))
     await waitForIdle(ctx, agent)
 
     // The injected context reached the model and is recorded with the plugin source.
     expect(JSON.stringify(adapter.requests[0]!.messages)).toContain('remember: be brief')
     const ctxMsg = events(agent).find(e => e.type === 'user/message' && e.data.source.kind !== 'user')
-    expect(ctxMsg?.type === 'user/message' && ctxMsg.data.source).toEqual({ kind: 'plugin', plugin: 'hooks-claude-code' })
+    expect(ctxMsg?.type === 'user/message' && ctxMsg.data.source).toEqual({ kind: 'hooks-claude-code' })
   })
 })
 
@@ -149,14 +147,14 @@ describe('hooks-claude-code bridge — PreToolUse', () => {
     const ctx = await harness(dir, adapter)
     let ran = false
     ctx.tools.register(defineContentToolFixture({ name: 'danger', description: 'd', parameters: {}, async execute() { ran = true; return [{ type: 'text', text: 'should not run' }] } }))
-    const agent = ctx.agentLoop.create(SessionId('a1'), { provider: 'mock', model: 'mock' })
+    const agent = await ctx.agentLoop.create(SessionId('a1'), { provider: 'mock', model: 'mock' })
     agent.followup(createUserMessage({ content: [{ type: 'text', text: 'use danger' }], source: { kind: 'user' } }))
     await waitForIdle(ctx, agent)
 
     expect(ran).toBe(false)
     const result = events(agent).find(e => e.type === 'tool/result')
-    expect(result?.type === 'tool/result' && result.data.message.content[0].isError).toBe(true)
-    expect(result?.type === 'tool/result' && result.data.message.content[0].content.some(b => b.type === 'text' && b.text.includes('danger tool blocked'))).toBe(true)
+    expect(result?.type === 'tool/result' && result.data.message.isError).toBe(true)
+    expect(result?.type === 'tool/result' && result.data.message.content.some(b => b.type === 'text' && b.text.includes('danger tool blocked'))).toBe(true)
   })
 
   it('a PreToolUse hook whose matcher does NOT match leaves the tool alone', async () => {
@@ -172,13 +170,13 @@ describe('hooks-claude-code bridge — PreToolUse', () => {
     const ctx = await harness(dir, adapter)
     let ran = false
     ctx.tools.register(defineContentToolFixture({ name: 'safe', description: 's', parameters: {}, async execute() { ran = true; return [{ type: 'text', text: 'ran ok' }] } }))
-    const agent = ctx.agentLoop.create(SessionId('a1'), { provider: 'mock', model: 'mock' })
+    const agent = await ctx.agentLoop.create(SessionId('a1'), { provider: 'mock', model: 'mock' })
     agent.followup(createUserMessage({ content: [{ type: 'text', text: 'use safe' }], source: { kind: 'user' } }))
     await waitForIdle(ctx, agent)
 
     expect(ran).toBe(true)
     const result = events(agent).find(e => e.type === 'tool/result')
-    expect(result?.type === 'tool/result' && result.data.message.content[0].isError).toBe(false)
+    expect(result?.type === 'tool/result' && result.data.message.isError).toBe(false)
   })
 })
 
@@ -194,14 +192,14 @@ describe('hooks-claude-code bridge — PostToolUse', () => {
     const adapter = new MockAdapter([toolCallResponse('c1', 'echo', {}), textResponse('done')])
     const ctx = await harness(dir, adapter)
     ctx.tools.register(defineContentToolFixture({ name: 'echo', description: 'e', parameters: {}, async execute() { return [{ type: 'text', text: 'raw output' }] } }))
-    const agent = ctx.agentLoop.create(SessionId('a1'), { provider: 'mock', model: 'mock' })
+    const agent = await ctx.agentLoop.create(SessionId('a1'), { provider: 'mock', model: 'mock' })
     agent.followup(createUserMessage({ content: [{ type: 'text', text: 'go' }], source: { kind: 'user' } }))
     await waitForIdle(ctx, agent)
 
     const result = events(agent).find(e => e.type === 'tool/result')
     // PostToolUse blocks AFTER the tool ran: the result is rewritten to isError + feedback.
-    expect(result?.type === 'tool/result' && result.data.message.content[0].isError).toBe(true)
-    expect(result?.type === 'tool/result' && result.data.message.content[0].content.some(b => b.type === 'text' && b.text.includes('output rejected, retry'))).toBe(true)
+    expect(result?.type === 'tool/result' && result.data.message.isError).toBe(true)
+    expect(result?.type === 'tool/result' && result.data.message.content.some(b => b.type === 'text' && b.text.includes('output rejected, retry'))).toBe(true)
   })
 
   it('a PostToolUse hook printing additionalContext attaches it after the tool result', async () => {
@@ -215,7 +213,7 @@ describe('hooks-claude-code bridge — PostToolUse', () => {
     const adapter = new MockAdapter([toolCallResponse('c1', 'echo', {}), textResponse('done')])
     const ctx = await harness(dir, adapter)
     ctx.tools.register(defineContentToolFixture({ name: 'echo', description: 'e', parameters: {}, async execute() { return [{ type: 'text', text: 'ok' }] } }))
-    const agent = ctx.agentLoop.create(SessionId('a1'), { provider: 'mock', model: 'mock' })
+    const agent = await ctx.agentLoop.create(SessionId('a1'), { provider: 'mock', model: 'mock' })
     agent.followup(createUserMessage({ content: [{ type: 'text', text: 'go' }], source: { kind: 'user' } }))
     await waitForIdle(ctx, agent)
 
@@ -239,15 +237,15 @@ describe('hooks-claude-code bridge — PostToolUse', () => {
     const ctx = await harness(dir, adapter)
     let ran = false
     ctx.tools.register(defineContentToolFixture({ name: 'echo', description: 'e', parameters: {}, async execute() { ran = true; return [{ type: 'text', text: 'x' }] } }))
-    const agent = ctx.agentLoop.create(SessionId('a1'), { provider: 'mock', model: 'mock' })
+    const agent = await ctx.agentLoop.create(SessionId('a1'), { provider: 'mock', model: 'mock' })
     agent.followup(createUserMessage({ content: [{ type: 'text', text: 'go' }], source: { kind: 'user' } }))
     await waitForIdle(ctx, agent)
 
     // No approval service is mounted, so `ask` fails closed: the tool does not run and the result is isError.
     expect(ran).toBe(false)
     const result = events(agent).find(e => e.type === 'tool/result')
-    expect(result?.type === 'tool/result' && result.data.message.content[0].isError).toBe(true)
-    expect(result?.type === 'tool/result' && result.data.message.content[0].content.some(b => b.type === 'text' && b.text.includes('needs approval'))).toBe(true)
+    expect(result?.type === 'tool/result' && result.data.message.isError).toBe(true)
+    expect(result?.type === 'tool/result' && result.data.message.content.some(b => b.type === 'text' && b.text.includes('needs approval'))).toBe(true)
   })
 })
 
@@ -263,7 +261,7 @@ describe('hooks-claude-code bridge — SessionStart', () => {
 
     const adapter = new MockAdapter([textResponse('ok')])
     const ctx = await harness(dir, adapter)
-    const agent = ctx.agentLoop.create(SessionId('a1'), { provider: 'mock', model: 'mock' })
+    const agent = await ctx.agentLoop.create(SessionId('a1'), { provider: 'mock', model: 'mock' })
     // session-start fires async (detached .then → agent.inject); injection now
     // enters the next-step inbox directly and becomes a user/message only after
     // step entry, so synchronize on the pending inbox item before sending.
@@ -356,13 +354,12 @@ describe('hooks-claude-code bridge — load resilience', () => {
     const adapter = new MockAdapter([textResponse('fine')])
     const ctx = new Context()
     await mountAgentLoopTestDependencies(ctx)
-    await ctx.plugin(SessionProjectionRegistry)
     await ctx.plugin(AgentLoop, { agents: [] })
     await ctx.plugin(LocalSubprocessRuntime)
     await ctx.plugin(LocalBashExecutor, { timeoutMs: 10_000 })
     await ctx.plugin(HooksClaude, { configPath: '/nonexistent/hooks.json' })
     ctx.llm.registerAdapter(['mock'], adapter)
-    const agent = ctx.agentLoop.create(SessionId('a1'), { provider: 'mock', model: 'mock' })
+    const agent = await ctx.agentLoop.create(SessionId('a1'), { provider: 'mock', model: 'mock' })
     agent.followup(createUserMessage({ content: [{ type: 'text', text: 'go' }], source: { kind: 'user' } }))
     await waitForIdle(ctx, agent)
     // The turn ran normally — no hooks, no crash.
@@ -377,7 +374,7 @@ describe('hooks-claude-code bridge — load resilience', () => {
     const adapter = new MockAdapter([textResponse('fine')])
     const warn = vi.fn()
     const ctx = await harness(dir, adapter, (ctx) => { ctx.logger.warn = warn as never })
-    const agent = ctx.agentLoop.create(SessionId('invalid-claude-matcher'), { provider: 'mock', model: 'mock' })
+    const agent = await ctx.agentLoop.create(SessionId('invalid-claude-matcher'), { provider: 'mock', model: 'mock' })
     agent.followup(createUserMessage({ content: [{ type: 'text', text: 'go' }], source: { kind: 'user' } }))
     await waitForIdle(ctx, agent)
     expect(adapter.requests).toHaveLength(1)
@@ -396,7 +393,7 @@ describe('hooks-claude-code bridge — load resilience', () => {
     const adapter = new MockAdapter([textResponse('should not run')])
     const warn = vi.fn()
     const ctx = await harness(dir, adapter, (ctx) => { ctx.logger.warn = warn as never })
-    const agent = ctx.agentLoop.create(SessionId('unsupported-claude-matcher'), { provider: 'mock', model: 'mock' })
+    const agent = await ctx.agentLoop.create(SessionId('unsupported-claude-matcher'), { provider: 'mock', model: 'mock' })
     agent.followup(createUserMessage({ content: [{ type: 'text', text: 'go' }], source: { kind: 'user' } }))
     await waitForIdle(ctx, agent)
 
@@ -417,14 +414,13 @@ describe('hooks-claude-code bridge — load resilience', () => {
     const adapter = new MockAdapter([textResponse('ok')])
     const ctx = new Context()
     await mountAgentLoopTestDependencies(ctx)
-    await ctx.plugin(SessionProjectionRegistry)
     await ctx.plugin(AgentLoop, { agents: [] })
     await ctx.plugin(LocalSubprocessRuntime)
     await ctx.plugin(LocalBashExecutor, { timeoutMs: 10_000 })
     const fiber = await ctx.plugin(HooksClaude, { configPath: join(dir, 'hooks.json') })
     await fiber.dispose()
     ctx.llm.registerAdapter(['mock'], adapter)
-    const agent = ctx.agentLoop.create(SessionId('a1'), { provider: 'mock', model: 'mock' })
+    const agent = await ctx.agentLoop.create(SessionId('a1'), { provider: 'mock', model: 'mock' })
     agent.followup(createUserMessage({ content: [{ type: 'text', text: 'go' }], source: { kind: 'user' } }))
     await waitForIdle(ctx, agent)
     expect(adapter.requests).toHaveLength(1) // not blocked → the listener is gone

@@ -1,7 +1,7 @@
 import type { Context } from '@deepseek-ai/cordis'
 import type {
-  ConversationMatch, ConversationNodeContext, ConversationNodeDefinition, RunningToolCall,
-  ToolCallBlock, ToolResultNode,
+  ConversationMatch, ConversationNodeContext, ConversationNodeDefinition, StartedToolCall,
+  ToolResultNode,
 } from '@deepseek-ai/dsh-client-ui-conversation/client'
 import type {} from '@deepseek-ai/dsh-tools/types'
 import { trajectoryNode } from './trajectory-definition-common.ts'
@@ -10,6 +10,8 @@ import { trajectoryNode } from './trajectory-definition-common.ts'
  * state machines independent; see ../../../../../.agents/notes/implemented/
  * architecture/2026-08-09-client-conversation-node-assembly.md. */
 const MAX_DEPTH = 256
+
+type ToolCallBlock = StartedToolCall | ToolResultNode
 
 interface ToolState {
   readonly rootId: string
@@ -24,14 +26,16 @@ interface DispatchData {
   readonly name: string
   readonly arguments: unknown
   readonly isError?: boolean
+  readonly error?: ToolResultNode['error']
   readonly content?: ToolResultNode['content']
 }
 
-function rootCall(match: ConversationMatch): RunningToolCall {
+function rootCall(match: ConversationMatch): StartedToolCall {
   if (match.event.type !== 'tool/call') {
     throw new Error('trajectory-tool-call start requires tool/call')
   }
   return {
+    phase: 'start',
     callId: String(match.event.data.callId),
     name: match.event.data.name,
     argsRaw: match.event.data.arguments,
@@ -44,19 +48,19 @@ function rootCall(match: ConversationMatch): RunningToolCall {
 
 function rootResult(
   match: ConversationMatch,
-  previous?: RunningToolCall,
+  previous?: StartedToolCall,
 ): ToolResultNode | undefined {
   if (match.event.type !== 'tool/result') return undefined
-  const result = match.event.data.message.content[0]
+  const message = match.event.data.message
   return {
     kind: 'tool-result',
     seq: match.event.seq,
     time: match.event.time,
-    callId: String(match.event.data.message.source.callId),
+    callId: String(message.source.callId),
     call: previous === undefined ? null : { name: previous.name, argsRaw: previous.argsRaw },
     callTime: previous?.time ?? null,
-    content: result.content,
-    isError: result.isError === true,
+    content: message.content,
+    isError: message.isError === true,
     ...(match.event.data.error === undefined ? {} : { error: match.event.data.error }),
     meta: match.event.data.meta,
     subCalls: [],
@@ -73,8 +77,9 @@ function locationStep(match: ConversationMatch): number {
   return match.location.kind === 'step' ? match.location.step.step : 0
 }
 
-function childCall(match: ConversationMatch, data: DispatchData): RunningToolCall {
+function childCall(match: ConversationMatch, data: DispatchData): StartedToolCall {
   return {
+    phase: 'start',
     callId: data.subCallId,
     parentCallId: data.parentCallId,
     name: data.name,
@@ -101,6 +106,7 @@ function childResult(
     callTime: previous === undefined || 'kind' in previous ? null : previous.time,
     content: data.content ?? [],
     isError: data.isError === true,
+    ...(data.error === undefined ? {} : { error: data.error }),
     subCalls: [],
   }
 }
@@ -132,17 +138,17 @@ function acceptsEdge(state: ToolState, parent: string, child: string): boolean {
 
 function updateDispatch(state: ToolState, match: ConversationMatch): ToolState {
   const event = match.event
-  if (event.type !== 'tool/code-dispatch-start' && event.type !== 'tool/code-dispatch') return state
+  if (event.type !== 'tool/ptc-dispatch-start' && event.type !== 'tool/ptc-dispatch') return state
   const data = event.data
   const parentId = String(data.parentCallId)
   const childId = String(data.subCallId)
   const siblings = state.children.get(parentId) ?? []
   const index = siblings.indexOf(childId)
   if (index < 0 && !acceptsEdge(state, parentId, childId)) return state
-  if (event.type === 'tool/code-dispatch-start' && index >= 0) return state
+  if (event.type === 'tool/ptc-dispatch-start' && index >= 0) return state
 
   const calls = new Map(state.calls)
-  calls.set(childId, event.type === 'tool/code-dispatch-start'
+  calls.set(childId, event.type === 'tool/ptc-dispatch-start'
     ? childCall(match, data)
     : childResult(match, data, calls.get(childId)))
   if (index >= 0) return { ...state, calls }
@@ -210,7 +216,7 @@ function fallbackState(context: ConversationNodeContext<ToolState>): ToolState |
   return state
 }
 
-/** Trajectory-owned root Tool lifecycle with nested Code Dispatch calls. */
+/** Trajectory-owned root Tool lifecycle with nested PTC dispatch calls. */
 const trajectoryToolDefinition: ConversationNodeDefinition<ToolState> = {
   kind: 'trajectory-tool-call',
   target: 'trajectory',
@@ -219,7 +225,7 @@ const trajectoryToolDefinition: ConversationNodeDefinition<ToolState> = {
     if (event.type === 'tool/result') {
       return { id: String(event.data.message.source.callId), role: 'update' }
     }
-    if (event.type === 'tool/code-dispatch-start' || event.type === 'tool/code-dispatch') {
+    if (event.type === 'tool/ptc-dispatch-start' || event.type === 'tool/ptc-dispatch') {
       const rootCallId: unknown = event.data.rootCallId
       return typeof rootCallId === 'string' && rootCallId !== ''
         ? { id: rootCallId, role: 'update' }
@@ -259,7 +265,7 @@ const trajectoryToolDefinition: ConversationNodeDefinition<ToolState> = {
 /* jscpd:ignore-end */
 
 /**
- * Register the Trajectory Tool lifecycle.
+ * Register the Trajectory Tool lifecycle with raw native and PTC error details.
  *
  * @param ctx - Plugin context receiving the Definition.
  */

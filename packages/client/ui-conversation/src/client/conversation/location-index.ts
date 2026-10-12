@@ -1,5 +1,5 @@
 import {
-  type SessionEventLike, type SessionEventLikeEntry,
+  type AssistantLiveChunkEvent, type SessionEventLike, type SessionEventLikeEntry,
 } from '@deepseek-ai/dsh-api-session-controller/client'
 import { notifySubscribers } from '@deepseek-ai/dsh-client-store'
 import type { SessionEvent } from '@deepseek-ai/dsh-session/types'
@@ -183,6 +183,7 @@ export class ConversationLocationIndex {
   private readonly turnDataStores = new Map<number, MutableLocationDataStore>()
   private readonly stepDataStores = new Map<string, MutableLocationDataStore>()
   private readonly dirtyDataStores = new Set<MutableLocationDataStore>()
+  private readonly changedTurns = new Set<number>()
   private currentTurn: number | undefined
   private currentStep: number | undefined
 
@@ -192,6 +193,16 @@ export class ConversationLocationIndex {
    */
   snapshot(): ConversationTimelineSnapshot {
     return this.timeline
+  }
+
+  /**
+   * Drain the Turn changes accumulated for one assembly flush.
+   * @returns Turn identities changed since the preceding drain.
+   */
+  takeChangedTurns(): readonly number[] {
+    const turns = [...this.changedTurns]
+    this.changedTurns.clear()
+    return turns
   }
 
   /**
@@ -386,6 +397,9 @@ export class ConversationLocationIndex {
         }
       }
     }
+    for (const turn of new Set([...previousTurns.keys(), ...nextTurns.keys()])) {
+      if (previousTurns.get(turn) !== nextTurns.get(turn)) this.changedTurns.add(turn)
+    }
     this.timeline = sameMap && turnOrder === this.timeline.turnOrder
       ? this.timeline
       : { turnOrder, turns: nextTurns }
@@ -480,6 +494,7 @@ export class ConversationLocationIndex {
       ? [...this.timeline.turnOrder, turnNumber]
       : this.timeline.turnOrder
     this.timeline = { turnOrder, turns }
+    if (turn !== previousTurn) this.changedTurns.add(turnNumber)
 
     const changed = new Set<number>()
     for (const seq of this.seqsByTurn.get(turnNumber) ?? []) {
@@ -503,7 +518,7 @@ export class ConversationLocationIndex {
    * Index one non-boundary tail event without rescanning the window.
    * @param event - contiguous appended event.
    */
-  appendNonBoundary(event: SessionEvent): void {
+  appendNonBoundary(event: SessionEventLike): void {
     const explicit = payloadCoordinates(event)
     if (explicit.session === true) {
       this.coordinates.set(event.seq, {})
@@ -525,6 +540,38 @@ export class ConversationLocationIndex {
     this.locations.set(event.seq, this.resolve(event.seq))
   }
 
+  /**
+   * Remove indexed Assistant transients without rebuilding the Turn/Step timeline.
+   * @param events - transient events retired by one Assistant settlement.
+   */
+  removeAssistantTransients(events: readonly AssistantLiveChunkEvent[]): void {
+    for (const event of events) {
+      const turn = this.coordinates.get(event.seq)?.turn
+      if (turn !== undefined) {
+        const seqs = this.seqsByTurn.get(turn)
+        seqs?.delete(event.seq)
+        if (seqs?.size === 0) this.seqsByTurn.delete(turn)
+      }
+      this.coordinates.delete(event.seq)
+      this.locations.delete(event.seq)
+    }
+  }
+
+  /**
+   * Index one durable Assistant settlement inserted before an already visible tail.
+   * @param event - message or attempt settlement with explicit Turn and Step coordinates.
+   */
+  insertAssistantSettlement(
+    event: SessionEvent<'assistant/message'> | SessionEvent<'assistant/attempt'>,
+  ): void {
+    this.coordinates.set(event.seq, {
+      turn: event.data.turn,
+      step: event.data.step,
+    })
+    this.indexTurnSeq(event.data.turn, event.seq)
+    this.locations.set(event.seq, this.resolve(event.seq))
+  }
+
   private indexTurnSeq(turn: number, seq: number): void {
     const current = this.seqsByTurn.get(turn) ?? new Set<number>()
     current.add(seq)
@@ -540,19 +587,22 @@ export class ConversationLocationIndex {
   }
 
   private mutableTurnData(turn: number): MutableLocationDataStore {
-    const current = this.turnDataStores.get(turn) ?? this.createDataStore()
+    const current = this.turnDataStores.get(turn) ?? this.createDataStore(turn)
     this.turnDataStores.set(turn, current)
     return current
   }
 
   private mutableStepData(key: string): MutableLocationDataStore {
-    const current = this.stepDataStores.get(key) ?? this.createDataStore()
+    const current = this.stepDataStores.get(key) ?? this.createDataStore(Number(key.slice(0, key.indexOf(':'))))
     this.stepDataStores.set(key, current)
     return current
   }
 
-  private createDataStore(): MutableLocationDataStore {
-    return new MutableLocationDataStore(store => this.dirtyDataStores.add(store))
+  private createDataStore(turn: number): MutableLocationDataStore {
+    return new MutableLocationDataStore((store) => {
+      this.dirtyDataStores.add(store)
+      this.changedTurns.add(turn)
+    })
   }
 
   private storeFor(data: ConversationLocationData): MutableLocationDataStore {

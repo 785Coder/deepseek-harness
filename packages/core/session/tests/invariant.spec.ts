@@ -1,10 +1,17 @@
 import { describe, expect, it } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import { createScope, scopeTarget } from '@deepseek-ai/dsh-scope'
-import { createUserMessage, ToolCallId, createMessage, createToolResultMessage, freezeMessage } from '@deepseek-ai/dsh-llm'
+import { createDeveloperMessage, createSystemMessage, createUserMessage, ToolCallId, createMessage, createToolResultMessage, freezeMessage } from '@deepseek-ai/dsh-llm'
+import type { ContextFormed } from '@deepseek-ai/dsh-llm'
 import SessionStore, { SessionId, SessionSeq, TOOL_NOT_STARTED } from '@deepseek-ai/dsh-session'
 import * as SessionInvariant from '@deepseek-ai/dsh-session/invariant'
 import InvariantRegistry, { InvariantError } from '@deepseek-ai/dsh-invariants'
+
+declare module '@deepseek-ai/dsh-llm' {
+  interface MessageSourceMap {
+    'test': { kind: 'test' } & ContextFormed
+  }
+}
 
 async function setup(): Promise<{ ctx: Context; fiber: Awaited<ReturnType<Context['plugin']>> }> {
   const ctx = new Context()
@@ -31,6 +38,27 @@ describe('session-log invariants', () => {
     }).not.toThrow()
   })
 
+  it('requires developer messages to belong to the open turn and step', async () => {
+    const { ctx } = await setup()
+    try {
+      const session = ctx.sessions.create()
+      const message = createDeveloperMessage({ content: [{ type: 'tool-removal', toolName: 'search' }], source: { kind: 'test' } })
+      const append = (turn: number, step: number) => session.append('developer/message', { turn, step, message }, { surfaceOp: 'append' })
+      expect(() => append(1, 1)).toThrow('developer/message names turn 1/step 1')
+      session.append('turn/start', { turn: 1 })
+      expect(() => append(1, 1)).toThrow('developer/message names turn 1/step 1')
+      session.append('step/start', { turn: 1, step: 1 })
+      expect(() => append(2, 1)).toThrow('developer/message names turn 2/step 1')
+      expect(() => append(1, 2)).toThrow('developer/message names turn 1/step 2')
+      expect(() => append(1, 1)).not.toThrow()
+      expect(session.deriveMessages()).toEqual([message])
+      session.append('step/end', { turn: 1, step: 1 })
+      expect(() => append(1, 1)).toThrow('developer/message names turn 1/step 1')
+    } finally {
+      await ctx.fiber.dispose()
+    }
+  })
+
   it('accepts a well-formed turn, step, and tool sequence', async () => {
     const { ctx } = await setup()
     const session = ctx.sessions.create()
@@ -40,8 +68,12 @@ describe('session-log invariants', () => {
         content: [{ type: 'text', text: 'hi' }], source: { kind: 'user' },
       }), { surfaceOp: 'append' })
       session.append('step/start', { turn: 1, step: 1 })
-      session.append('assistant/chunk', { turn: 1, step: 1, chunk: { type: 'text-delta', index: 0, text: 'h' } })
+      session.append('assistant/attempt', {
+        turn: 1, step: 1,
+        stream: [{ type: 'text-chunks', time0: 1, index: 0, dt: [], texts: ['h'] }],
+      })
       session.append('assistant/message', {
+        stream: [],
         turn: 1,
         step: 1,
         message: createMessage({
@@ -152,7 +184,7 @@ describe('session-log invariants', () => {
     const outside = (await setup()).ctx.sessions.create()
     expect(() => outside.append('user/message', createUserMessage({
       content: [{ type: 'text', text: 'idle context' }],
-      source: { kind: 'plugin', plugin: 'test' },
+      source: { kind: 'test' },
     }), { surfaceOp: 'append' })).not.toThrow()
     // Route capacity is core execution state like the header beside it.
     expect(() => outside.append('request/context', {
@@ -181,6 +213,7 @@ describe('session-log invariants', () => {
       .toThrow(/while step 1 is still open/)
     expect(() => nested.append('step/end', { turn: 1, step: 2 })).toThrow(/open is turn 1\/step 1/)
     expect(() => nested.append('assistant/message', {
+      stream: [],
       turn: 1,
       step: 2,
       message: createMessage({
@@ -209,10 +242,10 @@ describe('session-log invariants', () => {
   it('requires step-scoped stream and tool events to name the open step', async () => {
     const chunk = (await setup()).ctx.sessions.create()
     chunk.append('turn/start', { turn: 1 })
-    expect(() => chunk.append('assistant/chunk', {
+    expect(() => chunk.append('assistant/attempt', {
       turn: 1,
       step: 1,
-      chunk: { type: 'text-delta', index: 0, text: 'x' },
+      stream: [{ type: 'text-chunks', time0: 1, index: 0, dt: [], texts: ['x'] }],
     })).toThrow(/open is turn 1\/step null/)
 
     const tool = (await setup()).ctx.sessions.create()
@@ -227,6 +260,16 @@ describe('session-log invariants', () => {
         isError: false,
       }),
     }, { surfaceOp: 'append' })).toThrow(/no prior tool\/call/)
+  })
+
+  it('requires a system/message to name the open step', async () => {
+    const session = (await setup()).ctx.sessions.create()
+    session.append('turn/start', { turn: 1 })
+    const message = createSystemMessage('You are terse.')
+    expect(() => session.append('system/message', { turn: 1, step: 1, message }, { surfaceOp: 'append' }))
+      .toThrow(/open is turn 1\/step null/)
+    session.append('step/start', { turn: 1, step: 1 })
+    expect(() => session.append('system/message', { turn: 1, step: 1, message }, { surfaceOp: 'append' })).not.toThrow()
   })
 
   it('keeps fresh tool-result appends open-step checked', async () => {
@@ -273,13 +316,10 @@ describe('session-log invariants', () => {
       ...original.data,
       message: freezeMessage({
         ...original.data.message,
-        content: [{
-          ...original.data.message.content[0],
-          content: [{ type: 'text', text: 'pruned' }],
-        }] satisfies typeof original.data.message.content,
+        content: [{ type: 'text', text: 'pruned' }],
       }),
     }, {
-      surfaceOp: { op: 'replace', start: original.seq, end: original.seq },
+      surfaceOp: { op: 'replace', startSeq: original.seq, endSeq: original.seq },
       sourceEventSeqs: [original.seq],
     })).not.toThrow()
   })
@@ -312,13 +352,10 @@ describe('session-log invariants', () => {
       ...original.data,
       message: freezeMessage({
         ...original.data.message,
-        content: [{
-          ...original.data.message.content[0],
-          content: [{ type: 'text', text: 'pruned' }],
-        }] satisfies typeof original.data.message.content,
+        content: [{ type: 'text', text: 'pruned' }],
       }),
     }, {
-      surfaceOp: { op: 'replace', start: original.seq, end: original.seq },
+      surfaceOp: { op: 'replace', startSeq: original.seq, endSeq: original.seq },
       sourceEventSeqs: [original.seq],
     })).toThrow(/outside any open turn/)
   })
@@ -393,10 +430,10 @@ describe('session-log invariants', () => {
     session.append('step/start', { turn: 1, step: 1 })
     await fiber.dispose()
     await ctx.plugin(SessionInvariant)
-    expect(() => session.append('assistant/chunk', {
+    expect(() => session.append('assistant/attempt', {
       turn: 1,
       step: 1,
-      chunk: { type: 'text-delta', index: 0, text: 'h' },
+      stream: [{ type: 'text-chunks', time0: 1, index: 0, dt: [], texts: ['h'] }],
     })).not.toThrow()
     expect(() => session.append('turn/start', { turn: 2 }))
       .toThrow(/turn 1 is still open/)

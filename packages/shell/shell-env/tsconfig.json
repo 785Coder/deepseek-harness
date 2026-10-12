@@ -27,7 +27,7 @@
       "path": "../../core/tools"
     },
     {
-      "path": "../../session/session-persistence"
+      "path": "../../boot/app-boot"
     }
   ]
 }

@@ -1,8 +1,7 @@
 import type { Context } from '@deepseek-ai/cordis'
 import type {
-  ConversationMatch, ConversationNodeContext, ConversationNodeDefinition,
+  ConversationMatch, ConversationNodeContext, ConversationNodeDefinition, TurnErrorNode,
 } from '@deepseek-ai/dsh-client-ui-conversation/client'
-import type { TurnErrorNode } from '../contract/snapshot.ts'
 import { chatNode } from './common.ts'
 import { displayFailure } from './event-projection.ts'
 
@@ -30,8 +29,13 @@ function lastStep(context: ConversationNodeContext<TurnErrorState>): number {
 }
 
 function failureFrom(match: ConversationMatch): TurnErrorState['failure'] | undefined {
-  if (match.event.type !== 'turn/end' || match.event.data.reason.kind !== 'error') return undefined
-  const failure = match.event.data.reason.error
+  if (match.event.type !== 'turn/end') return undefined
+  const reason = match.event.data.reason
+  const failure = reason.kind === 'error' ? reason.error
+    : reason.kind === 'aborted' && reason.reason.kind === 'hook'
+      && reason.reason.reason === 'deepseek-account/signed-out'
+      ? { message: 'Stopped because you signed out of DeepSeek.', code: 'ACCOUNT_SIGNED_OUT' } : undefined
+  if (failure === undefined) return undefined
   const display = displayFailure(failure)
   return {
     seq: match.event.seq,
@@ -59,7 +63,9 @@ export const turnErrorDefinition: ConversationNodeDefinition<TurnErrorState> = {
   target: 'chat',
   match: (event) => {
     if (event.type === 'turn/start') return { id: String(event.data.turn), role: 'start' }
-    if (event.type === 'turn/end' && event.data.reason.kind === 'error') {
+    if (event.type === 'turn/end' && (event.data.reason.kind === 'error'
+      || (event.data.reason.kind === 'aborted' && event.data.reason.reason.kind === 'hook'
+        && event.data.reason.reason.reason === 'deepseek-account/signed-out'))) {
       return { id: String(event.data.turn), role: 'update' }
     }
     return null

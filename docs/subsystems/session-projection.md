@@ -67,7 +67,7 @@ interface ProjectionDefinition<
 }
 ```
 
-The whole-value event rule is load-bearing: a state-carrying log event carries the complete post-change state, never a bare delta — it keeps every transition trivially cheap and every served value self-describing (last-wins for consumers).
+Every served projection value is a complete read model. A source event may carry a whole value or a domain-owned operation; the unit's deterministic `apply` owns replay, and checkpoint plus forward tail replay reconstructs the same state.
 
 ## The snapshot and the change feed
 
@@ -122,20 +122,41 @@ The persisted projection cache service. Opens the `session_projcache` domain at 
 ```ts cordis-catalog
 /**
  * The zero-I/O listing read: whole values viewed straight from the stored
- * rows (version-matching keys only), each cut carried with its watermark so
- * a client value store can seed under its higher-seq-wins rule — as stale
- * as the last durable checkpoint but never wrong, and never from an
- * unrelated log (the caller's header is the identity witness). Fresher
- * paths (the history tail baseline) supersede these values whenever a
- * session is actually opened.
+ * rows (version-matching keys only) of the record bound to the caller's
+ * lifecycle. The header is the only identity witness a listing holds, so
+ * this face matches the lifecycle identity (`formatVersion`, `createdAt`,
+ * `cwd`, `isSeeded`) and not the inherited cut: within one format
+ * generation the cut is fixed at fork time, so it distinguishes no
+ * lifecycle the other fields do not, and a viewed value never seeds a fold.
+ * The view is as stale as the last durable checkpoint but never wrong and
+ * never from an unrelated log. Its `asOfSeq` is the lowest watermark among
+ * the served rows: the stored record's own position, which the header
+ * cannot relate to the log the caller later opens. The Session list
+ * therefore labels the block as cached, and the client lets every value the
+ * connected Session produces supersede it whatever this number says.
  * @param meta - the listed session's header (identity witness; no log read).
- * @param inheritedEventCount - exact inherited prefix length that completes
- * the checkpoint identity.
  * @param keys - optional projection keys required by the caller's audience.
- * @returns the cut (`asOfSeq` = lowest served-row watermark), or
- *   `undefined` when no usable row exists for this lifecycle.
+ * @returns the viewed block, or `undefined` when no usable row exists for
+ *   this lifecycle at the current Session format.
  */
-cachedSnapshot( meta: SessionHeader, inheritedEventCount: SessionLogOffset, keys?: readonly Extract<keyof SessionProjectionMap, string>[], ): ProjectionSnapshot | undefined
+cachedSnapshot( meta: SessionHeader, keys?: readonly Extract<keyof SessionProjectionMap, string>[], ): ProjectionSnapshot | undefined
+
+/**
+ * Read only a predecessor checkpoint's title as a zero-I/O listing hint.
+ *
+ * The authoritative Session header supplies the lifecycle identity. A cache
+ * checkpoint can lag that log but cannot lead it because writes flush the
+ * log first, so a matching predecessor title is a genuine (possibly stale)
+ * fact from this Session. The registry still requires the current title
+ * projection's row version and schema. No other predecessor projection is
+ * exposed: format normalization can change their current meaning, and the
+ * {@link cachedSnapshot} / hydration paths continue to reject them.
+ * @param meta - authoritative listed Session header.
+ * @returns a title-only block at the stored title row's watermark, or
+ *   `undefined` when the record is current, newer, unrelated, missing, or
+ *   incompatible with the title unit.
+ */
+cachedPredecessorTitle(meta: SessionHeader): ProjectionSnapshot | undefined
 
 /**
  * Hydrate projection cells for an already-prepared Session without another
@@ -271,9 +292,9 @@ checkpoint(session: Session): ProjectionCheckpoint
  * yields an end below every watermark and the restore rejects for a full
  * re-read.
  * @param checkpoint - persisted rows for one session (possibly stale or empty).
- * @returns the seq to hand the persistence `readFrom`, or `undefined`
- *   when no unit is registered (no read needed — {@link restore} would
- *   serve empty values regardless).
+ * @returns the offset for the stored-log suffix read (`SessionHandle.read`),
+ *   or `undefined` when no unit is registered (no read needed —
+ *   {@link restore} would serve empty values regardless).
  */
 restoreFloor(checkpoint: ProjectionCheckpoint): SessionLogOffset | undefined
 
@@ -294,8 +315,8 @@ viewCheckpoint( checkpoint: ProjectionCheckpoint, keys?: readonly Extract<keyof 
  * Cold read: fold every persisted unit over a stored log suffix, seeding
  * each from its checkpoint row when usable — the one read recipe (cached
  * state + forward tail replay + `view`) applied without a live `Session`.
- * Call with the events returned by a persistence
- * `readFrom(id, restoreFloor(checkpoint))` and that same floor as
+ * Call with the stored events at or past `restoreFloor(checkpoint)` (a
+ * `SessionHandle.read` slice) and that same floor as
  * `baseSeq`; the floor's one-below anchor makes the supplied end honest,
  * so a shrunk log is detected here. A row is usable iff its
  * `ver` matches the live unit's `stateVersion`, it does not predate `baseSeq`

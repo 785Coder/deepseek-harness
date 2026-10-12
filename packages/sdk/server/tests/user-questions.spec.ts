@@ -50,7 +50,8 @@ function makeFakeContext(agents: ReadonlyMap<string, Agent>): FakeContext {
       get: (id: SessionId) => agents.get(String(id)),
     },
     get: (name: string) => {
-      if (name === 'userQuestions') return {}
+      // Simulate the optional question service activating after the server.
+      if (name === 'userQuestions') return undefined
       if (name === 'llm') return { listProviders: () => [{ id: 'mock', name: 'Mock' }], resolveCallConfig: vi.fn(async (config: unknown) => config) }
       return undefined
     },

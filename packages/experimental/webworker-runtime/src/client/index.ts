@@ -9,6 +9,7 @@
  * @module @deepseek-ai/dsh-experimental-webworker-runtime/client
  */
 import { IMAGE_FILE_NAME } from '../image-layout.ts'
+import type { ClientFileUploadHooks } from '@deepseek-ai/dsh-client-file-upload/types'
 import { PREVIEW_FIXTURE_MANIFEST_FILE } from '../fixture-manifest.ts'
 import { WorkerTunnel, type TunnelFetch } from './client.ts'
 import { applyIndexInjections } from './apply-injections.ts'
@@ -26,11 +27,21 @@ export {
 interface ClientTransportGlobal {
   __DSH_TRANSPORT__?: {
     fetch: TunnelFetch
-    openStream: (endpoint: string, payload: unknown, signal: AbortSignal) => AsyncIterable<unknown>
+    openStream: (
+      endpoint: string,
+      payload: unknown,
+      signal: AbortSignal,
+      uplink?: AsyncIterable<unknown>,
+    ) => AsyncIterable<unknown>
     loadBundle: (url: string) => Promise<void>
     /** The page spawned the worker the Host runs in, so the page owns it. */
     ownsHost: boolean
   }
+}
+
+/** Upload hook consumed by the independent Client file-upload service. */
+interface ClientFileUploadGlobal {
+  __DSH_FILE_UPLOAD__?: ClientFileUploadHooks
 }
 
 /** Inputs for {@link connectWorkerHost}. */
@@ -145,11 +156,14 @@ export async function connectWorkerHost(worker: Worker, options?: WorkerHostConn
     const payload = await tunnel.bootPayload()
     ;(globalThis as ClientTransportGlobal).__DSH_TRANSPORT__ = {
       fetch: (input, init) => tunnel.fetch(input, init),
-      openStream: (endpoint, payload, signal) => tunnel.open(endpoint, payload, signal),
+      openStream: (endpoint, payload, signal, uplink) => tunnel.open(endpoint, payload, signal, uplink),
       loadBundle: (url: string) => tunnel.loadBundle(url),
       // The host lives in a worker this page spawned: the page owns it, so
       // the privileged surface stays reachable off loopback authorities.
       ownsHost: true,
+    }
+    ;(globalThis as ClientFileUploadGlobal).__DSH_FILE_UPLOAD__ = {
+      fetch: (input, init) => tunnel.fetch(input, init),
     }
     await applyIndexInjections(payload.injections, src => tunnel.loadBundle(src))
     ready.resolve()

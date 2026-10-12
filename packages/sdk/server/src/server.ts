@@ -16,7 +16,7 @@ import type { SessionId } from '@deepseek-ai/dsh-session'
 import type { SessionPersistence } from '@deepseek-ai/dsh-session-persistence'
 import type SubagentRuntime from '@deepseek-ai/dsh-subagent'
 import type { SubagentRunEndInfo } from '@deepseek-ai/dsh-subagent'
-import * as LlmDeepSeek from '@deepseek-ai/dsh-llm-deepseek'
+import * as LlmDeepSeek from '@deepseek-ai/dsh-llm-deepseek-api-key'
 import type {
   InitializeParams,
   InitializeResult,
@@ -35,6 +35,8 @@ import type { ApprovalOutcome } from '@deepseek-ai/dsh-user-approval/types'
 import type {} from '@deepseek-ai/dsh-user-approval'
 import type {} from '@deepseek-ai/dsh-user-questions'
 import type { AskUserQuestionAnswer } from '@deepseek-ai/dsh-user-questions/types'
+
+import { SdkJobObserver, type SdkJobOptions } from './jobs.ts'
 
 interface SessionRecord {
   handle: AgentHandle
@@ -68,6 +70,8 @@ function subagentParentOf(carrier: Scoped<SubagentRuntime>): Agent {
 export interface HarnessSdkJsonRpcServerOptions {
   /** Report max-token termination as an accepted result instead of an infrastructure error. */
   maxTokensAsSuccess?: boolean
+  /** Validated deployment bounds for SDK job observation. */
+  jobs?: SdkJobOptions
 }
 
 function successStatus(reason: string, options: HarnessSdkJsonRpcServerOptions): 'ok' | 'error' {
@@ -81,6 +85,7 @@ function successStatus(reason: string, options: HarnessSdkJsonRpcServerOptions):
  * reinitialization is unsupported.
  */
 export class HarnessSdkJsonRpcServer {
+  private readonly jobObserver: SdkJobObserver
   private cwd = process.cwd()
   private provider = 'deepseek-official'
   private model = 'deepseek-official'
@@ -100,6 +105,14 @@ export class HarnessSdkJsonRpcServer {
     private readonly transport: JsonRpcTransportPeer,
     private readonly options: HarnessSdkJsonRpcServerOptions = {},
   ) {
+    this.jobObserver = new SdkJobObserver(ctx, transport, id => this.ownedSessionIds.has(id), options.jobs ?? {
+      maxSubscriptions: 32, ackTimeoutMs: 60000, flushMs: 100, maxFrameBytes: 65536,
+    })
+    this.disposers.push(ctx.on('agent/disposed', ({ agent }) => {
+      const sessionId: string = String(agent.session.id)
+      this.ownedSessionIds.delete(sessionId)
+      this.jobObserver.ownerDisposed(sessionId)
+    }))
     const serverOptions = this.options
     this.disposers.push(ctx.on('session/event', (session, event) => {
       const payload: SessionEventNotification = { sessionId: String(session.id), event }
@@ -135,44 +148,39 @@ export class HarnessSdkJsonRpcServer {
         childSessionId: String(info.id),
         status: successStatus(info.stopReason, serverOptions),
         stopReason: info.stopReason,
-        ...(info.lastAssistantMessage === undefined ? {} : { lastAssistantMessage: info.lastAssistantMessage }),
+        ...(info.lastAssistantMessage === undefined
+          ? {}
+          : { lastAssistantMessage: [...info.lastAssistantMessage] }),
       }
       transport.notify('subagent.finished', payload)
     }))
     // SDK 提问中继：把 agent 作用域的 user-questions/request waterfall 经 JSON-RPC
     // 交给 SDK 客户端应答；非本服务端拥有的 session 委托给下游 answerer 处理。
-    const userQuestions = this.ctx.get('userQuestions')
-    if (userQuestions !== undefined) {
-      this.disposers.push(this.ctx.on('user-questions/request', (request, next) => {
-        const sessionId = request.agent?.id
-        if (sessionId === undefined || !this.ownedSessionIds.has(String(sessionId))) return next()
-        return this.transport.request(
-          'session/question',
-          { sessionId: String(sessionId), questions: request.questions },
-          request.signal,
-          // The peer resolves an untyped wire result; the client answers this
-          // method with an AskUserQuestionAnswer, the only shape ask() accepts.
-        ) as Promise<AskUserQuestionAnswer>
-      }))
-    }
+    // Optional siblings can activate after this server. Register the relay
+    // before their first request rather than depending on Loader mount order.
+    this.disposers.push(this.ctx.on('user-questions/request', (request, next) => {
+      const sessionId = request.agent?.id
+      if (sessionId === undefined || !this.ownedSessionIds.has(String(sessionId))) return next()
+      return this.transport.request(
+        'session/question',
+        { sessionId: String(sessionId), questions: request.questions },
+        request.signal,
+      ) as Promise<AskUserQuestionAnswer>
+    }))
     // SDK 批准中继：把 ctx.approval 的 waterfall 经 JSON-RPC 交给 SDK 客户端应答。
-    const approval = this.ctx.get('approval')
-    if (approval !== undefined) {
-      this.disposers.push(this.ctx.on('approval/request', (req, next) => {
-        if (!this.ownedSessionIds.has(String(req.agent.session.id))) return next()
-        return this.transport.request(
-          'session/approval',
-          {
-            sessionId: String(req.agent.session.id),
-            toolName: req.toolName,
-            ...(req.callId === undefined ? {} : { callId: req.callId }),
-            ...(req.reason === undefined ? {} : { reason: req.reason }),
-          },
-          req.signal,
-          // 客户端以 ApprovalOutcome 应答该方法；服务层会规整异常返回为 fail-closed。
-        ) as Promise<ApprovalOutcome>
-      }))
-    }
+    this.disposers.push(this.ctx.on('approval/request', (req, next) => {
+      if (!this.ownedSessionIds.has(String(req.agent.session.id))) return next()
+      return this.transport.request(
+        'session/approval',
+        {
+          sessionId: String(req.agent.session.id),
+          toolName: req.toolName,
+          ...(req.callId === undefined ? {} : { callId: req.callId }),
+          ...(req.reason === undefined ? {} : { reason: req.reason }),
+        },
+        req.signal,
+      ) as Promise<ApprovalOutcome>
+    }))
   }
 
   /**
@@ -197,7 +205,7 @@ export class HarnessSdkJsonRpcServer {
       : ReasoningEffortId(params.reasoningEffort)
     if (!this.hasAdapterFor(provider)) {
       if (provider !== 'deepseek-official') throw new Error(`no adapter registered for provider "${provider}"`)
-      this.llmFiber = await this.ctx.plugin(LlmDeepSeek, {})
+      this.llmFiber = await this.ctx.plugin(LlmDeepSeek)
     }
     // Adapter presence was read from this service above; a successful fallback mount also requires it.
     const llm = this.ctx.get('llm') as LlmRuntime
@@ -258,6 +266,7 @@ export class HarnessSdkJsonRpcServer {
 
   private async performShutdown(): Promise<Record<string, never>> {
     this.shuttingDown = true
+    await this.jobObserver.dispose()
     const pendingCreations = [...this.sessionCreations.values()]
     await Promise.allSettled(pendingCreations)
     this.sessionCreations.clear()
@@ -292,6 +301,11 @@ export class HarnessSdkJsonRpcServer {
    * @returns the handler's result, to be serialized as the response.
    */
   async handleRequest(method: string, params: Record<string, unknown> | undefined): Promise<unknown> {
+    if (method.startsWith('job/')) {
+      if (!this.initialized || this.shuttingDown) throw new Error('SDK server is not ready')
+      if (!['job/list', 'job/read', 'job/subscribe', 'job/follow', 'job/unsubscribe'].includes(method)) throw new Error(`unknown SDK job method: ${method}`)
+      return this.jobObserver.handle(method, params ?? {})
+    }
     switch (method) {
       case 'initialize':
         return this.initialize(params as unknown as InitializeParams)
@@ -301,6 +315,23 @@ export class HarnessSdkJsonRpcServer {
         return this.shutdown()
       default:
         throw new Error(`unknown DeepSeek Harness SDK runtime method: ${method}`)
+    }
+  }
+
+  /** Route observation acknowledgements without creating request waiters.
+   * @param method - notification method.
+   * @param params - raw notification parameters.
+   */
+  handleNotification(method: string, params: Record<string, unknown>): void {
+    if (method === 'job/ack') this.jobObserver.acknowledge(params)
+    if (method === 'job/unsubscribe') {
+      // Notifications carry no error channel: a throw here would surface as an
+      // unhandled rejection and fail-loud kill the whole runtime process.
+      try {
+        this.jobObserver.handle(method, params)
+      } catch (error) {
+        this.ctx.logger.warn(`job/unsubscribe notification dropped: ${error instanceof Error ? error.message : String(error)}`)
+      }
     }
   }
 
@@ -323,7 +354,7 @@ export class HarnessSdkJsonRpcServer {
     // No preset composition: this server's compositions keep the model-facing
     // rows in the host plane, so this agent reads them from the global layer. A
     // deployment that configures a roster has to join one here first
-    // (@deepseek-ai/dsh-agent-presets README, "Composing a child agent").
+    // (@deepseek-ai/dsh-agent-preset-registry README, "Composing a child agent").
     const id = brandString<SessionId>(sessionId)
     const agentOptions: AgentOptions = {
       provider: this.provider,
@@ -333,7 +364,7 @@ export class HarnessSdkJsonRpcServer {
     }
     const persistence = this.ctx.get('sessionPersistence')
     const handle = persistence !== undefined
-      && typeof persistence.listSnapshots === 'function'
+      && typeof persistence.list === 'function'
       && await this.hasPersistedLog(persistence, id)
       ? await this.ctx.agents.resume({ resumeSessionId: id, agentOptions })
       : await this.ctx.agents.create({ sessionId: id, meta: { cwd: this.cwd }, agentOptions })
@@ -346,7 +377,7 @@ export class HarnessSdkJsonRpcServer {
   }
 
   private async hasPersistedLog(persistence: SessionPersistence, id: SessionId): Promise<boolean> {
-    const snapshots = await persistence.listSnapshots()
+    const snapshots = await persistence.list()
     return snapshots.some(snapshot => snapshot.header.id === id)
   }
 

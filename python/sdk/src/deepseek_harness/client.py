@@ -15,6 +15,9 @@ from typing import Callable, TypeAlias, TypeVar
 from pydantic import BaseModel
 
 from .errors import JsonRpcError, TransportClosedError
+from .jobs import (JobView, JobOutputRead, JobRowsSubscription, JobOutputSubscription,
+                   JobListResult, JobSubscriptionReceipt, JobRemovedError, JobSubscriptionError,
+                   _job_closed_error, job_error, parse_rows, parse_output)
 from .models import IncomingRequest, InitializeResponse, JsonObject, JsonValue, Notification
 
 ModelT = TypeVar("ModelT", bound=BaseModel)
@@ -55,6 +58,7 @@ class HarnessClient:
         self._notification_subscribers: dict[
             str, tuple[queue.Queue[Notification | BaseException], NotificationFilter | None]
         ] = {}
+        self._job_subscriptions: dict[str, JobRowsSubscription | JobOutputSubscription] = {}
         self._session_parents: dict[str, str] = {}
         self._requests: queue.Queue[IncomingRequest | BaseException] = queue.Queue()
         self._stderr_lines: deque[str] = deque(maxlen=400)
@@ -237,6 +241,66 @@ class HarnessClient:
         """Subscribe to a session and descendants discovered from subagent lifecycle edges."""
         return self.subscribe_notifications(self._notification_belongs_to_session_tree(session_id))
 
+    def list_jobs(self, session_id: str) -> list[JobView]:
+        """Return jobs owned by an authorized SDK session."""
+        try:
+            return self.request("job/list", {"sessionId": session_id}, response_model=JobListResult).jobs
+        except JsonRpcError as error:
+            raise job_error(error) from error
+
+    def read_job_output(self, session_id: str, job_id: str, *, from_offset: int | None = None) -> JobOutputRead:
+        """Read retained output without moving the model cursor."""
+        params: JsonObject = {"sessionId": session_id, "jobId": job_id}
+        if from_offset is not None:
+            params["from"] = from_offset
+        try:
+            return self.request("job/read", params, response_model=JobOutputRead)
+        except JsonRpcError as error:
+            raise job_error(error) from error
+
+    def subscribe_jobs(self, session_id: str) -> JobRowsSubscription:
+        """Observe whole-set list snapshots independently of run()."""
+        id: str = str(uuid.uuid4())
+        subscription: JobRowsSubscription = JobRowsSubscription(id, parse_rows, self._ack_job, self._cancel_job)
+        self._open_job("job/subscribe", {"subscriptionId": id, "sessionId": session_id}, subscription)
+        return subscription
+
+    def follow_job(self, session_id: str, job_id: str, *, from_offset: int | None = None) -> JobOutputSubscription:
+        """Observe retained output and terminal status using an independent byte cursor."""
+        id: str = str(uuid.uuid4())
+        subscription: JobOutputSubscription = JobOutputSubscription(id, parse_output, self._ack_job, self._cancel_job)
+        params: JsonObject = {"subscriptionId": id, "sessionId": session_id, "jobId": job_id}
+        if from_offset is not None:
+            params["from"] = from_offset
+        self._open_job("job/follow", params, subscription)
+        return subscription
+
+    def _open_job(self, method: str, params: JsonObject, subscription: JobRowsSubscription | JobOutputSubscription) -> None:
+        with self._lock:
+            self._job_subscriptions[subscription.subscription_id] = subscription
+        try:
+            receipt: JobSubscriptionReceipt = self.request(method, params, response_model=JobSubscriptionReceipt)
+            if receipt.subscription_id != subscription.subscription_id:
+                raise JobSubscriptionError("Runtime returned a different subscription id")
+        except BaseException as error:
+            subscription.close()
+            if isinstance(error, JsonRpcError):
+                raise job_error(error) from error
+            raise
+
+    def _ack_job(self, id: str, seq: int) -> None:
+        self.notify("job/ack", {"subscriptionId": id, "seq": seq})
+
+    def _cancel_job(self, id: str) -> None:
+        with self._lock:
+            subscription: JobRowsSubscription | JobOutputSubscription | None = self._job_subscriptions.pop(id, None)
+        if subscription is None:
+            return
+        try:
+            self.notify("job/unsubscribe", {"subscriptionId": id})
+        except (TransportClosedError, BrokenPipeError):
+            pass  # Local teardown must still wake consumers after runtime loss.
+
     def next_request(self) -> IncomingRequest:
         item = self._requests.get()
         if isinstance(item, BaseException):
@@ -406,6 +470,25 @@ class HarnessClient:
             return
         if isinstance(method, str):
             params = message.get("params")
+            if method in {"job.frame", "job.closed"}:
+                payload: dict[str, JsonValue] = params if isinstance(params, dict) else {}
+                id: object = payload.get("subscriptionId")
+                with self._lock:
+                    subscription = self._job_subscriptions.get(id) if isinstance(id, str) else None
+                    if method == "job.closed" and isinstance(id, str):
+                        self._job_subscriptions.pop(id, None)
+                if subscription is not None:
+                    if method == "job.frame":
+                        subscription._receive(payload.get("seq"), payload.get("frame"))
+                    else:
+                        reason: object = payload.get("reason")
+                        if reason == "removed":
+                            subscription._finish(JobRemovedError("Job record was removed"))
+                        elif reason == "error":
+                            subscription._finish(_job_closed_error(payload.get("error")))
+                        else:
+                            subscription._finish()
+                return
             notification = Notification(method=method, payload=params if isinstance(params, dict) else {})
             with self._lock:
                 self._record_session_relationship_locked(notification)
@@ -433,6 +516,10 @@ class HarnessClient:
             self._responses.clear()
             subscribers = list(self._notification_subscribers.values())
             self._notification_subscribers.clear()
+            job_subscribers = list(self._job_subscriptions.values())
+            self._job_subscriptions.clear()
+        for job_subscriber in job_subscribers:
+            job_subscriber._finish(exc)
         for waiter in waiters:
             waiter.put(exc)
         for subscriber, _predicate in subscribers:

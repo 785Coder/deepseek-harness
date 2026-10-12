@@ -1,6 +1,6 @@
 import { Context } from '@deepseek-ai/cordis'
 import { createScope } from '@deepseek-ai/dsh-scope'
-import SessionStore, { SessionId, SessionLogOffset, SessionSeq } from '@deepseek-ai/dsh-session'
+import SessionStore, { SESSION_FORMAT_VERSION, SessionId, SessionLogOffset, SessionSeq } from '@deepseek-ai/dsh-session'
 import type { Session, SessionEvent, SessionHeader, SurfaceIntent } from '@deepseek-ai/dsh-session'
 import type { SessionObservation } from '@deepseek-ai/dsh-session-query'
 import { snapshotSubagentDescriptor } from '@deepseek-ai/dsh-subagent'
@@ -170,8 +170,8 @@ describe('SessionHistoryController', () => {
   it('subscribes before a cold read and ignores unrelated and replayed buffered events', async () => {
     const { ctx, transport } = await setup()
     const sessionId = SessionId('cold-race')
-    const header = {
-      version: 0,
+    const header: SessionHeader = {
+      version: SESSION_FORMAT_VERSION,
       id: sessionId,
       createdAt: 1,
       cwd: '/workspace',
@@ -183,6 +183,7 @@ describe('SessionHistoryController', () => {
       events: readonly SessionEvent[]
     }>()
     ctx.provide('sessionPersistence', testSessionPersistence(ctx, {
+      list: () => Promise.resolve([header]),
       inspect: () => inspected.promise,
     }) as never)
     const abort = new AbortController()
@@ -210,8 +211,8 @@ describe('SessionHistoryController', () => {
     const ctx = new Context()
     await ctx.plugin(SessionStore)
     const sessionId = SessionId('created-during-observation')
-    const header = {
-      version: 0,
+    const header: SessionHeader = {
+      version: SESSION_FORMAT_VERSION,
       id: sessionId,
       createdAt: 1,
       cwd: '/workspace',
@@ -268,8 +269,8 @@ describe('SessionHistoryController', () => {
       { inject: ['sessions'] },
     ))
     const sessionId = SessionId('cold-attach')
-    const header = {
-      version: 0,
+    const header: SessionHeader = {
+      version: SESSION_FORMAT_VERSION,
       id: sessionId,
       createdAt: 1,
       cwd: '/workspace',
@@ -316,8 +317,8 @@ describe('SessionHistoryController', () => {
   it('rejects gaps in replayed and live event sequences', async () => {
     const replay = await setup()
     const replayId = SessionId('replay-gap')
-    const replayHeader = {
-      version: 0,
+    const replayHeader: SessionHeader = {
+      version: SESSION_FORMAT_VERSION,
       id: replayId,
       createdAt: 1,
       cwd: '/workspace',
@@ -365,8 +366,8 @@ describe('SessionHistoryController', () => {
     const ctx = new Context()
     await ctx.plugin(SessionStore)
     const sessionId = SessionId('projectionless-follow')
-    const meta = {
-      version: 0,
+    const meta: SessionHeader = {
+      version: SESSION_FORMAT_VERSION,
       id: sessionId,
       createdAt: 1,
       cwd: '/workspace',
@@ -399,7 +400,7 @@ describe('SessionHistoryController', () => {
     const ctx = new Context()
     await ctx.plugin(SessionStore)
     const sessionId = SessionId('promotion-failure')
-    const meta = { version: 0, id: sessionId, createdAt: 1, cwd: '/workspace' }
+    const meta = { version: SESSION_FORMAT_VERSION, id: sessionId, createdAt: 1, cwd: '/workspace' }
     const disposePromotion = vi.fn()
     const promotion = {
       source: 'prepared', header: meta, events: [], cursor: -1,
@@ -440,11 +441,26 @@ describe('SessionHistoryController', () => {
     const signal = new AbortController().signal
 
     await expect(transport.page({
-      address: { kind: 'subagent', parentSessionId, childSessionId, mode: 'continuable' },
+      address: {
+        kind: 'subagent',
+        parentSessionId,
+        childSessionId,
+        mode: 'continuable',
+      },
       throughSeq: 0,
     }, signal)).resolves.toMatchObject({
       records: [{ type: 'event', event: { type: 'subagent/descriptor' } }],
     })
+    await expect(transport.page({
+      address: { kind: 'subagent', parentSessionId, childSessionId, mode: 'unknown' },
+      throughSeq: 0,
+    }, signal)).resolves.toMatchObject({
+      records: [{ type: 'event', event: { type: 'subagent/descriptor' } }],
+    })
+    await expect(transport.page({
+      address: { kind: 'subagent', parentSessionId: SessionId('other-parent'), childSessionId, mode: 'unknown' },
+      throughSeq: 0,
+    }, signal)).rejects.toMatchObject({ code: 'subagent/unauthorized' })
     await expect(transport.page({
       address: {
         kind: 'subagent',
@@ -455,7 +471,12 @@ describe('SessionHistoryController', () => {
       throughSeq: 0,
     }, signal)).rejects.toMatchObject({ code: 'subagent/unauthorized' })
     await expect(transport.page({
-      address: { kind: 'subagent', parentSessionId, childSessionId, mode: 'one-shot' },
+      address: {
+        kind: 'subagent',
+        parentSessionId,
+        childSessionId,
+        mode: 'one-shot',
+      },
       throughSeq: 0,
     }, signal)).rejects.toMatchObject({ code: 'subagent/unauthorized' })
     await expect(transport.page({
@@ -468,7 +489,7 @@ describe('SessionHistoryController', () => {
     const { ctx, transport } = await setup()
     const sessionId = SessionId('corrupt-cold')
     const failure = new Error('cold log is corrupt')
-    const header = { version: 0, id: sessionId, createdAt: 1, cwd: '/workspace' }
+    const header: SessionHeader = { version: SESSION_FORMAT_VERSION, id: sessionId, createdAt: 1, isSeeded: false, cwd: '/workspace' }
     ctx.provide('sessionPersistence', testSessionPersistence(ctx, {
       list: () => Promise.resolve([header]),
       inspect: () => Promise.reject(failure),
@@ -496,6 +517,12 @@ describe('SessionHistoryController', () => {
       { address, throughSeq: -1, beforeSeq: 1.5 },
       { address, throughSeq: -1, maxMessages: 0 },
       { address, throughSeq: -1, maxMessages: 1.5 },
+      { address, throughSeq: -1, turnWindow: { minMessages: 0, minTurns: 2 } },
+      { address, throughSeq: -1, turnWindow: { minMessages: 1.5, minTurns: 2 } },
+      { address, throughSeq: -1, turnWindow: { minMessages: 51, minTurns: 2 } },
+      { address, throughSeq: -1, maxMessages: 20, turnWindow: { minMessages: 21, minTurns: 2 } },
+      { address, throughSeq: -1, turnWindow: { minMessages: 50, minTurns: 0 } },
+      { address, throughSeq: -1, turnWindow: { minMessages: 50, minTurns: 1.5 } },
     ]) {
       await expect(transport.page(request, signal())).rejects.toMatchObject({ code: 'gateway/bad-request' })
     }
@@ -506,7 +533,7 @@ describe('SessionHistoryController', () => {
     const corruptId = SessionId('missing-through-seq')
     cold(
       corrupt.ctx,
-      { version: 0, id: corruptId, createdAt: 1, cwd: '/workspace', isSeeded: false },
+      { version: SESSION_FORMAT_VERSION, id: corruptId, createdAt: 1, cwd: '/workspace', isSeeded: false },
       [event('fixture/start', SessionSeq(0)), event('fixture/gap', SessionSeq(2))],
     )
     await expect(corrupt.transport.page({
@@ -514,6 +541,16 @@ describe('SessionHistoryController', () => {
     }, signal())).rejects.toMatchObject({ code: 'SESSION_QUERY_CORRUPT_SESSION' })
     for (const maxMessages of [0, 0.5]) {
       const iterator = transport.follow({ address, maxMessages }, signal())[Symbol.asyncIterator]()
+      await expect(iterator.next()).rejects.toMatchObject({ code: 'gateway/bad-request' })
+    }
+    for (const turnWindow of [
+      { minMessages: 0, minTurns: 2 },
+      { minMessages: 1.5, minTurns: 2 },
+      { minMessages: 51, minTurns: 2 },
+      { minMessages: 50, minTurns: 0 },
+      { minMessages: 50, minTurns: 1.5 },
+    ]) {
+      const iterator = transport.follow({ address, turnWindow }, signal())[Symbol.asyncIterator]()
       await expect(iterator.next()).rejects.toMatchObject({ code: 'gateway/bad-request' })
     }
   })
@@ -525,8 +562,10 @@ describe('SessionHistoryController', () => {
       .rejects.toMatchObject({ code: 'session/not-found' })
 
     const inspect = vi.fn(() => Promise.resolve(undefined))
+    const stat = vi.fn(() => Promise.resolve(undefined))
     ctx.provide('sessionPersistence', testSessionPersistence(ctx, {
       list: () => Promise.resolve([]),
+      stat,
       inspect,
     }) as never)
     await expect(transport.page({ address: ordinary, throughSeq: -1 }, signal()))
@@ -540,14 +579,16 @@ describe('SessionHistoryController', () => {
       },
       throughSeq: -1,
     }, signal())).rejects.toMatchObject({ code: 'subagent/not-found' })
-    expect(inspect).toHaveBeenCalledTimes(2)
+    // Absence is decided by the stat preflight; no log open is attempted.
+    expect(stat).toHaveBeenCalledTimes(2)
+    expect(inspect).not.toHaveBeenCalled()
   })
 
   it('rejects incomplete cold metadata before serving a source', async () => {
     const first = await setup()
     const sessionId = SessionId('incomplete')
     const address = { kind: 'session' as const, sessionId }
-    const firstHeader = { version: 0, id: sessionId, createdAt: 1, isSeeded: false }
+    const firstHeader: SessionHeader = { version: SESSION_FORMAT_VERSION, id: sessionId, createdAt: 1, isSeeded: false }
     first.ctx.provide('sessionPersistence', testSessionPersistence(first.ctx, {
       list: () => Promise.resolve([firstHeader]),
       inspect: () => Promise.resolve({
@@ -560,8 +601,8 @@ describe('SessionHistoryController', () => {
       .rejects.toMatchObject({ code: 'session/not-found' })
 
     const second = await setup()
-    const listed = { version: 0, id: sessionId, createdAt: 1, cwd: '/workspace', isSeeded: false }
-    const inspected = { version: 0, id: sessionId, createdAt: 1, isSeeded: false }
+    const listed: SessionHeader = { version: SESSION_FORMAT_VERSION, id: sessionId, createdAt: 1, cwd: '/workspace', isSeeded: false }
+    const inspected: SessionHeader = { version: SESSION_FORMAT_VERSION, id: sessionId, createdAt: 1, isSeeded: false }
     second.ctx.provide('sessionPersistence', testSessionPersistence(second.ctx, {
       list: () => Promise.resolve([listed]),
       inspect: () => Promise.resolve({
@@ -577,8 +618,8 @@ describe('SessionHistoryController', () => {
   it('serves cold ordinary history and validates every durable subagent descriptor state', async () => {
     const ordinaryBench = await setup()
     const ordinaryId = SessionId('cold-ordinary')
-    const ordinaryHeader = {
-      version: 0,
+    const ordinaryHeader: SessionHeader = {
+      version: SESSION_FORMAT_VERSION,
       id: ordinaryId,
       createdAt: 1,
       cwd: '/workspace',
@@ -594,8 +635,8 @@ describe('SessionHistoryController', () => {
 
     const parentSessionId = SessionId('cold-parent')
     const childSessionId = SessionId('cold-child')
-    const childHeader = {
-      version: 0,
+    const childHeader: SessionHeader = {
+      version: SESSION_FORMAT_VERSION,
       id: childSessionId,
       createdAt: 1,
       cwd: '/workspace',
@@ -632,7 +673,7 @@ describe('SessionHistoryController', () => {
     const parentSessionId = SessionId('missing-projection-parent')
     const childSessionId = SessionId('missing-projection-child')
     const meta: SessionHeader = {
-      version: 0,
+      version: SESSION_FORMAT_VERSION,
       id: childSessionId,
       createdAt: 1,
       cwd: '/workspace',
@@ -654,7 +695,12 @@ describe('SessionHistoryController', () => {
     const history = new SessionHistoryController(ctx, vi.fn())
 
     await expect(history.page({
-      address: { kind: 'subagent', parentSessionId, childSessionId, mode: 'continuable' },
+      address: {
+        kind: 'subagent',
+        parentSessionId,
+        childSessionId,
+        mode: 'continuable',
+      },
       throughSeq: -1,
     }, signal())).rejects.toMatchObject({
       code: 'subagent/catalog-diagnostic', details: { reason: 'unsupported' },
@@ -685,14 +731,19 @@ describe('SessionHistoryController', () => {
     }))
     const childSnapshot = vi.spyOn(child.ctx.sessionProjections, 'snapshot')
     const page = await child.transport.page({
-      address: { kind: 'subagent', parentSessionId, childSessionId, mode: 'continuable' },
+      address: {
+        kind: 'subagent',
+        parentSessionId,
+        childSessionId,
+        mode: 'continuable',
+      },
       throughSeq: 0,
     }, signal())
     expect('projections' in page).toBe(false)
     expect(childSnapshot).toHaveBeenCalledWith(childSession)
   })
 
-  it('keeps message-aligned pagination contiguous across replacement provenance', async () => {
+  it('keeps message-aligned pagination contiguous across replacement source-event references', async () => {
     const { ctx, transport } = await setup()
     const session = ctx.sessions.create(SessionId('pagination'), { meta: { cwd: '/workspace' } })
     session.append('turn/start', { turn: 1 })
@@ -702,7 +753,7 @@ describe('SessionHistoryController', () => {
     append(session, 'assistant/message', { turn: 1, step: 2, message: {} }, { surfaceOp: 'append' })
     const summary = append(session, 'fixture/summary', {})
     const replacement = append(session, 'user/message', { content: [], source: { kind: 'plugin' } }, {
-      surfaceOp: { op: 'replace', start: SessionSeq(1), end: SessionSeq(4) },
+      surfaceOp: { op: 'replace', startSeq: SessionSeq(1), endSeq: SessionSeq(4) },
       sourceEventSeqs: [SessionSeq(1), firstReply.seq, SessionSeq(3), SessionSeq(4), summary.seq],
     })
 
