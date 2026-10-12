@@ -9,6 +9,8 @@ import { OutputWaiter, sleep } from './wake.ts'
 export interface ObserveJobOptions {
   /** Coalescing window after a wake before reading, in milliseconds. */
   readonly flushMs: number
+  /** Optional consumer notification when removal prevents further output reads. */
+  readonly onRemoved?: (job: JobView) => void
   /**
    * Soft byte budget per `output` frame. Accumulated chunks flush once the
    * budget is met; one chunk larger than the budget ships whole (the
@@ -70,6 +72,7 @@ export async function* observeJobOutput(
     yield { type: 'opened', job, from: cursor }
     while (!signal.aborted) {
       if (removed !== undefined) {
+        options.onRemoved?.(removed)
         yield { type: 'status', job: removed }
         return
       }
@@ -78,6 +81,13 @@ export async function* observeJobOutput(
         yield* outputFrames(read.chunks, read.next, read.lossy, options.maxFrameBytes)
       }
       cursor = read.next
+      // Consumers can hold a yielded output frame while owner teardown removes the record.
+      // oxlint-disable-next-line typescript/no-unnecessary-condition -- the removal closure writes it while the frame suspends on yield.
+      if (removed !== undefined) {
+        options.onRemoved?.(removed)
+        yield { type: 'status', job: removed }
+        return
+      }
       job = registry.get(id, request.sessionId)
       if (isTerminal(job.status) && cursor >= job.output.total) {
         yield { type: 'status', job }

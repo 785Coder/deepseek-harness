@@ -61,6 +61,12 @@ with DeepSeekHarness(
 
 随附的 `sdk-minimal` profile 是独立显式配置树，而不是 `dsh-base` 上的 overlay。使用 `profile="sdk-minimal"` 选择它；普通 `model` 参数是唯一运行时模型选择，也适用于不在适配器建议目录中的模型 ID。它只提供按平台选择的持久 shell、本地执行与 JSONL 会话；文件系统工具、设置、托管凭据、遥测、Web 工具与完整默认工具清单仍由独立的完整 `sdk` 与 `web` profile 提供。
 
+## 后台任务
+
+`harness.client.list_jobs(session_id)` 查询 SDK 已授权会话拥有的任务。`subscribe_jobs(session_id)` 返回完整列表 `JobRowsFrame` 快照；`follow_job(session_id, job_id, from_offset=...)` 依次返回 `JobOpenedFrame`、`JobOutputFrame` 和 `JobStatusFrame`。`read_job_output()` 单次读取当前保留输出。这些观察不会消费模型的任务游标或 producer 最终结果。无 owner 任务不开放；子任务须显式指定已授权的子会话 ID。
+
+订阅可在 `run()` 返回后继续，但必须保持 client/runtime 存活。使用上下文管理器或调用 `close()` 停止观察，不会取消任务。`next(timeout=...)` 超时抛 `queue.Empty`，正常结束后抛 `StopIteration`，失败抛类型化任务异常。每个订阅支持一个消费者和一个待消费帧；取出帧后返还确认信用，慢消费者可能超时。成功处理输出后再保存帧的 `next`；游标为 UTF-8 字节偏移，保留缺口由 `lossy` 和 `gap_before` 标记。记录移除可能丢失未读输出并抛 `JobRemovedError`。观察不跨运行时重启持久化，也不自动下载 spill 路径对应文件。
+
 ## 结果与通知
 
 `Session.run()` 的活动区间从提示词被持久 inbox 接收时开始，到整个 agent 下一次进入空闲状态时结束，并返回 `RunResult(session_id, final_response, finish_reason, events, notifications)`。`final_response` 是该区间内根会话最后提交的助手文本。`finish_reason` 是最后一个根会话 `turn/end` 的 `kind`，例如 `completed`、`max-tokens` 或 `error`；没有轮次结束时为 `None`。缺少字符串 `data.reason.kind` 的 `turn/end` 违反协议，并会抛出 `SdkProtocolError`。

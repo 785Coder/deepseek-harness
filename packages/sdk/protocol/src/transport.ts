@@ -234,7 +234,11 @@ export class JsonRpcLineTransport implements JsonRpcTransportPeer {
       const result = await handler(method, params)
       this.write({ jsonrpc: '2.0', id, result })
     } catch (error) {
-      this.writeError(id, -32603, error instanceof Error ? error.message : String(error))
+      if (error instanceof JsonRpcResponseError) {
+        this.write({ jsonrpc: '2.0', id, error: { code: error.code ?? -32603, message: error.message, data: error.data } })
+      } else {
+        this.writeError(id, -32603, error instanceof Error ? error.message : String(error))
+      }
     }
   }
 

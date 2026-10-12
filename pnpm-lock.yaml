@@ -10536,6 +10536,12 @@ importers:
 
   packages/sdk/server:
     dependencies:
+      '@deepseek-ai/dsh-api-job-controller':
+        specifier: workspace:*
+        version: link:../../api/job-controller
+      '@deepseek-ai/dsh-jobs':
+        specifier: workspace:*
+        version: link:../../jobs/jobs
       '@deepseek-ai/dsh-brand':
         specifier: workspace:*
         version: link:../../util/brand

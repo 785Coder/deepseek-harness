@@ -16,6 +16,29 @@ import { collect, harness, next, registerAgent, startJob, wait } from './host-ha
 const OBSERVE: ObserveJobOptions = { flushMs: 5, maxFrameBytes: 1024 }
 
 describe('observeJobOutput', () => {
+  it('reports removal after a consumer holds an output frame', async () => {
+    const ctx = await harness()
+    const job = startJob(ctx)
+    job.append('last bytes')
+    await job.settle({ status: 'completed' })
+    let removed: boolean = false
+    const abort: AbortController = new AbortController()
+    const iterator = observeJobOutput(ctx.jobs, { jobId: job.id }, {
+      ...OBSERVE, onRemoved: () => { removed = true },
+    }, abort.signal)[Symbol.asyncIterator]()
+    try {
+      expect(await next<JobFollowFrame>(iterator)).toMatchObject({ type: 'opened' })
+      expect(await next<JobFollowFrame>(iterator)).toMatchObject({ type: 'output' })
+      ctx.jobs.remove(job.id)
+      expect(await next<JobFollowFrame>(iterator)).toMatchObject({ type: 'status' })
+      expect(removed).toBe(true)
+      expect(await next<JobFollowFrame>(iterator)).toBeUndefined()
+    } finally {
+      abort.abort()
+      await iterator.return?.()
+      await ctx.fiber.dispose()
+    }
+  })
   function observed(ctx: Context, request: { jobId: JobId; sessionId?: SessionId; from?: number }) {
     const abort = new AbortController()
     const frames: JobFollowFrame[] = []

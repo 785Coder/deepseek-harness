@@ -49,6 +49,12 @@ Stdout 只承载 JSON-RPC 帧，客户端可以逐字节解析；诊断信息应
 
 本 fork 还会将 SDK 所属会话的阻塞式提问中继为 `session/question`、审批中继为 `session/approval`；客户端使用同一 JSON-RPC 请求 id 应答。监听器同样覆盖晚于 SDK server 挂载的服务。子会话从父会话继承审批归属。此中继不支持可选的限时提问及迟到答案接入。已有持久化 SDK session id 会恢复原会话，而不是建立替代对话。
 
+### 任务观察
+
+`job/list`、`job/read`、`job/subscribe`、`job/follow` 和 `job/unsubscribe` 提供 SDK 已授权会话所属任务的非消费式观察，不开放无 owner 任务。`job.frame` 携带顺序数据，`job.closed` 将观察结束与任务状态分开报告。客户端在请求观察前注册订阅 ID，消费每帧后发送 `job/ack`；每个订阅最多一个未确认帧。关闭观察不会杀死任务。可选 registry 在请求时解析，因此支持晚挂载 jobs 服务。输出保留和记录移除可能丢失未读字节；输出不持久化，也不消费 producer 结果。
+
+经校验的部署字段为 `jobMaxSubscriptions`（32）、`jobAckTimeoutMs`（60000）、`jobFlushMs`（100）和 `jobMaxFrameBytes`（65536，保持完整 chunk 的软预算）。慢观察者超时，不阻塞交互请求。owner 销毁和 shutdown 会释放观察监听器。
+
 ### 关闭与退出
 
 插件应答 `shutdown`，刷新响应并 dispose 根上下文，使 SDK 持有的 agent、订阅与持久化达到完全停稳，然后以 0 退出。EOF 与信号退出归 app bin 负责，后者也会 dispose 根上下文。仅卸载此插件会停止服务，但不会退出进程。

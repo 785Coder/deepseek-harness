@@ -8,6 +8,8 @@
     "src"
   ],
   "references": [
+    { "path": "../../api/job-controller/tsconfig.host.json" },
+    { "path": "../../jobs/jobs" },
     {
       "path": "../../../vendor/cordis"
     },

@@ -33,7 +33,7 @@ Wire one JSON-RPC 2.0 message per `\n`-terminated line over byte streams you own
 
 ### The SDK methods
 
-Both wire ends share one method set: three client-to-server requests, four server-to-client notifications, and two server-to-client requests that relay `ask_user_question` and `ctx.approval`.
+Both wire ends share session methods, explicit task observations, and server-to-client requests that relay `ask_user_question` and `ctx.approval`. Task queries use `job/list` and `job/read`; observations use `job/subscribe`, `job/follow`, and `job/unsubscribe`. `job.frame { subscriptionId, seq, frame }` requires a client `job/ack { subscriptionId, seq }` before the next frame; `job.closed` reports the observation's reason and optional typed failure. A notification form of `job/unsubscribe` supports non-blocking local cleanup. Task errors carry `data.kind` with code `-32010`; the transport preserves explicitly thrown `JsonRpcResponseError` fields rather than replacing them with `-32603`.
 
 | Direction | Method | Payload types |
 |---|---|---|

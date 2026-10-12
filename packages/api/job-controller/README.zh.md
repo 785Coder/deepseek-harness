@@ -28,6 +28,8 @@ Host 控制器要求活体 Agent 注册表与 job 注册表（已发布组合里
 
 Client 入口安装 `ctx.jobs`（`IJobs`），由包内部的 `ClientJobsModel` 支撑。`kill(sessionId, jobId)` 转发到 `job.kill` 并把 Remote 结果交给调用方判定准入。`watchRows(sessionId)` 不论多少查看器持有都只为每个被关注的会话开一条名册流，最后一个释放后丢弃行；重连后的首帧已经是完整事实。`observe(sessionId, jobId)` 不论多少查看器展开同一 job 都只开一条 Gateway 流，按 job 保留有界的渲染尾部并用 `gapBefore` 标记淘汰或续读缺口，在终态帧上关闭视图或把流失败记到视图上，最后一个查看器释放后丢弃视图。插件在自己的上下文仍是当前上下文时解析 Gateway 流工厂与 `job` namespace，因为流的（重）开启跑在未声明 `remote.job` 的调用栈上。
 
+仅供 Host 的 `./observation` 入口导出 `streamJobRows` 和 `observeJobOutput`，其他 transport 无需挂载 Remote 控制器即可复用。可选 `onRemoved` 回调标识记录移除后无法排空未读字节的输出观察；Web 默认终态投影不变。
+
 ### 配置
 
 | 字段 | 默认值 | 含义 |

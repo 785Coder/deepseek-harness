@@ -7,6 +7,7 @@
   },
   "files": [
     "src/index.ts",
+    "src/observation.ts",
     "src/observe.ts",
     "src/rows.ts",
     "src/types.ts",

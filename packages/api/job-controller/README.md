@@ -28,6 +28,8 @@ The Host controller requires the live Agent registry and the job registry (`dsh-
 
 The Client entry installs `ctx.jobs` (`IJobs`), backed by the package-internal `ClientJobsModel`. `kill(sessionId, jobId)` forwards to `job.kill` and returns the Remote result for the caller's admission verdict. `watchRows(sessionId)` keeps one roster stream open per watched session however many viewers hold it and drops the rows after the last release; a reconnect's first frame is already the whole truth. `observe(sessionId, jobId)` opens one Gateway stream per job however many viewers expand it, keeps a bounded render tail per job with `gapBefore` marking eviction or resume gaps, closes the view on the terminal frame or records a stream failure on it, and drops the view after the last viewer releases. The plugin resolves the Gateway stream factory and the `job` namespace while its own context is current, because stream (re)opens run on caller stacks whose dynamic context has not declared `remote.job`.
 
+The Host-only `./observation` entry exports `streamJobRows` and `observeJobOutput` for other transports without mounting the Remote controller. An optional `onRemoved` callback identifies output observations that cannot drain unread bytes after record removal; Web's default terminal projection is unchanged.
+
 ### Config
 
 | Field | Default | Meaning |
