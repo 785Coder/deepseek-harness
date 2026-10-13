@@ -244,9 +244,9 @@ describe('HarnessSdkJsonRpcServer approval relay', () => {
 
     await server.shutdown()
 
-    // 5 个注册（session/event、agent/status、session/created、subagent/end、approval/request）
+    // 6 个注册（session/event、agent/status、session/created、subagent/end、approval/request、agent/disposed）
     // 的 disposer 全部被调用。
-    expect(fake.disposers).toHaveLength(5)
+    expect(fake.disposers).toHaveLength(6)
     for (const disposer of fake.disposers) {
       expect(disposer).toHaveBeenCalledOnce()
     }

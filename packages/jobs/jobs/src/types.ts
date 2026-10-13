@@ -139,6 +139,18 @@ export interface JobRead {
   snapshot: JobSnapshot
 }
 
+/** Output and post-peek state returned by {@link JobRegistry.peek}. */
+export interface JobPeek {
+  /**
+   * Terminal output of a final-output job, or empty while the job is live or
+   * when the producer declared `readOutput` (stream output is reserved for
+   * the model's consuming reads). Never consumed by this read.
+   */
+  text: string
+  /** The job's state at peek time. */
+  snapshot: JobSnapshot
+}
+
 /**
  * Completion callback with the exact owner supplied at start, or `undefined`
  * for an unowned job. Returned promises are observed but not awaited.

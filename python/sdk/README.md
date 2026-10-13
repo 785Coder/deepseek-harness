@@ -61,6 +61,14 @@ with DeepSeekHarness(
 
 The shipped `sdk-minimal` profile is a standalone explicit tree rather than an overlay on `dsh-base`. Select it with `profile="sdk-minimal"`; the ordinary `model` argument is the sole runtime model selection, including for model ids outside the adapter's advisory catalog. It provides persistent Bash, the string-replace editor, local execution, and JSONL sessions; settings, managed credentials, telemetry, Web tools, and the full default tool roster remain available through the separate full `sdk` and `web` profiles.
 
+## Background jobs
+
+`harness.client.list_jobs(session_id)` queries jobs owned by an SDK-owned session. `subscribe_jobs(session_id)` yields whole-set `JobRowsFrame` snapshots; `follow_job(session_id, job_id, from_offset=...)` yields `JobOpenedFrame`, `JobOutputFrame`, then `JobStatusFrame`. `read_job_output()` reads the retained terminal output once. These observations never consume the model's job cursor or final producer result. Unowned jobs are excluded; child jobs require their explicit authorized child session id.
+
+On this runtime only settled final-output jobs (for example background subagents) carry output; stream-kind jobs report status transitions only.
+
+Subscriptions outlive `run()` but require a live client/runtime. Use them as context managers or call `close()` to stop observing without cancelling the job. `next(timeout=...)` raises `queue.Empty` on timeout, `StopIteration` after normal completion, and a typed job exception on failure. Each subscription supports one consumer and one pending frame; consuming a frame returns acknowledgement credit. A slow consumer can time out. Save an output frame's `next` only after processing it; offsets are UTF-8 bytes. Record removal may lose unread output and raises `JobRemovedError`. Observations do not persist across runtime restarts.
+
 ## Results and notifications
 
 `Session.run()` owns an activity interval from its prompt's durable inbox receipt through the next whole-agent idle and returns `RunResult(session_id, final_response, finish_reason, events, notifications)`. `final_response` is the last committed root-session assistant text in the interval. `finish_reason` is the `kind` of the last root-session `turn/end`, such as `completed`, `max-tokens`, or `error`, and is `None` when no turn ended. A `turn/end` without a string `data.reason.kind` violates the protocol and raises `SdkProtocolError`.

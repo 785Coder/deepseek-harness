@@ -33,7 +33,7 @@ kind: "package-library"
 
 ### SDK 方法
 
-两个协议端共享同一套方法：三个客户端到服务端请求与四个服务端到客户端通知。
+两个协议端共享会话方法与显式任务观察。任务查询使用 `job/list` 和 `job/read`；观察使用 `job/subscribe`、`job/follow` 和 `job/unsubscribe`。`job.frame { subscriptionId, seq, frame }` 需要客户端发送 `job/ack { subscriptionId, seq }` 后才发送下一帧；`job.closed` 报告观察结束原因和可选的类型化失败。通知形式的 `job/unsubscribe` 支持非阻塞本地清理。任务错误以代码 `-32010` 携带 `data.kind`；transport 保留显式抛出的 `JsonRpcResponseError` 字段，不替换为 `-32603`。
 
 | 方向 | 方法 | 载荷类型 |
 |---|---|---|

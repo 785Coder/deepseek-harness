@@ -1047,6 +1047,11 @@
       "source": "packages/jobs/jobs/src/types.ts"
     },
     {
+      "doc": "docs/subsystems/jobs.md",
+      "symbol": "JobPeek",
+      "source": "packages/jobs/jobs/src/types.ts"
+    },
+    {
       "doc": "docs/subsystems/terminal.md",
       "symbol": "TerminalWaitReason",
       "source": "packages/terminal/terminal/src/types.ts"

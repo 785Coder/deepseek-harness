@@ -1250,6 +1250,6 @@ describe('HarnessSdkJsonRpcServer', () => {
     const server = new HarnessSdkJsonRpcServer(ctx, new FakeTransport())
 
     await expect(server.shutdown()).rejects.toBe(listenerFailure)
-    expect(on).toHaveBeenCalledTimes(4)
+    expect(on).toHaveBeenCalledTimes(5)
   })
 })

@@ -152,9 +152,23 @@ interface JobRead {
 }
 ```
 
+```ts type-equiv
+/** Output and post-peek state returned by {@link JobRegistry.peek}. */
+interface JobPeek {
+  /**
+   * Terminal output of a final-output job, or empty while the job is live or
+   * when the producer declared `readOutput` (stream output is reserved for
+   * the model's consuming reads). Never consumed by this read.
+   */
+  text: string
+  /** The job's state at peek time. */
+  snapshot: JobSnapshot
+}
+```
+
 ## 服务行为
 
-抽象的 [`JobRegistry`](../../packages/jobs/jobs/src/index.ts) Service Definition 规定原子 `start`、限定调用方作用域的 `get` 和 `list`、`read`、`kill`、有界 `wait`、故障隔离的 `onJobDone` 与 `onJobsChanged` 监听器，以及 `attachController`；[`LocalJobRegistry`](../../packages/jobs/jobs-local/src/index.ts) 是其进程局部 Service Provider。授权会比较拥有者会话；拥有者清理与准入会使用确切的已注册 `Agent` 实例。本地 Service Provider 的 `maxConcurrentJobsPerOwner` 配置必须是正的安全整数，默认值为 `10`；它按确切 owner 统计 `running` 与 `stopping` 记录，所有无 owner 任务共享一个服务级桶，并在生产方终止结算后释放容量。Service Definition 约定见 [`dsh-jobs`](../../packages/jobs/jobs/README.zh.md)，注册表生命周期与准入策略见 [`dsh-jobs-local`](../../packages/jobs/jobs-local/README.zh.md)，面向模型的 Consumer 见 [`dsh-tool-jobs`](../../packages/jobs/tool-jobs/README.zh.md)。
+抽象的 [`JobRegistry`](../../packages/jobs/jobs/src/index.ts) Service Definition 规定原子 `start`、限定调用方作用域的 `get` 和 `list`、限定会话作用域的 `listBySession`、`read`、非消费的限定会话作用域 `peek`、`kill`、有界 `wait`、故障隔离的 `onJobDone` 与 `onJobsChanged` 监听器，以及 `attachController`；[`LocalJobRegistry`](../../packages/jobs/jobs-local/src/index.ts) 是其进程局部 Service Provider。授权会比较拥有者会话；拥有者清理与准入会使用确切的已注册 `Agent` 实例。`listBySession` 与 `peek` 会围栏到确切的拥有 `SessionId`，并且既不推进模型游标，也不占用 `reported`，因此 SDK 与 Web 观察可以与模型并行读取。本地 Service Provider 的 `maxConcurrentJobsPerOwner` 配置必须是正的安全整数，默认值为 `10`；它按确切 owner 统计 `running` 与 `stopping` 记录，所有无 owner 任务共享一个服务级桶，并在生产方终止结算后释放容量。Service Definition 约定见 [`dsh-jobs`](../../packages/jobs/jobs/README.zh.md)，注册表生命周期与准入策略见 [`dsh-jobs-local`](../../packages/jobs/jobs-local/README.zh.md)，面向模型的 Consumer 见 [`dsh-tool-jobs`](../../packages/jobs/tool-jobs/README.zh.md)。
 
 <!-- BEGIN GENERATED cordis-surface (gen-cordis-catalog.ts) — do not edit between markers -->
 
@@ -205,6 +219,30 @@ abstract list(caller?: Agent): JobSnapshot[]
  * @returns a fresh snapshot.
  */
 abstract get(id: JobId, caller?: Agent): JobSnapshot
+
+/**
+ * List the jobs owned by exactly one session, in registration order.
+ * Session-keyed rather than caller-relative so an out-of-process observer
+ * holding a session identity but no {@link Agent} instance can enumerate.
+ * Unowned jobs are never included. Reads are non-consuming.
+ * @param sessionId - the session whose owned jobs to enumerate.
+ * @returns fresh snapshots.
+ */
+abstract listBySession(sessionId: SessionId): JobSnapshot[]
+
+/**
+ * Non-consuming observation read fenced by session identity. Returns the
+ * settled terminal output of a final-output job — or empty text while the
+ * job is live or when the producer declared `readOutput`, whose stream
+ * output stays reserved for the model's consuming reads — without
+ * advancing the model's read cursor and without marking the job reported.
+ * Throws for an unknown job, an unowned job, or a job owned by another
+ * session.
+ * @param id - job to look up.
+ * @param sessionId - observing session checked against the owner.
+ * @returns terminal output (or empty) and a fresh snapshot.
+ */
+abstract peek(id: JobId, sessionId: SessionId): JobPeek
 
 /**
  * Read the next stream delta, or the idempotent final output after settlement.
@@ -284,7 +322,7 @@ abstract onJobsChanged(listener: JobsChangedListener): () => void
 abstract attachController(name: string): () => void
 ```
 
-Types: [Agent](core.zh.md)
+Types: [Agent](core.zh.md) · [SessionId](core.zh.md)
 
 Source: [`packages/jobs/jobs/src/index.ts`](../../packages/jobs/jobs/src/index.ts)
 <!-- END GENERATED cordis-surface -->

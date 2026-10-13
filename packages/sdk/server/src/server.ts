@@ -34,6 +34,7 @@ import type { ApprovalOutcome } from '@deepseek-ai/dsh-user-approval/types'
 import type {} from '@deepseek-ai/dsh-user-approval'
 import type {} from '@deepseek-ai/dsh-user-questions'
 import type { AskUserQuestionAnswer } from '@deepseek-ai/dsh-user-questions/types'
+import { SdkJobObserver, type SdkJobOptions } from './jobs.ts'
 
 interface SessionRecord {
   handle: AgentHandle
@@ -67,6 +68,8 @@ function subagentParentOf(carrier: Scoped<SubagentRuntime>): Agent {
 export interface HarnessSdkJsonRpcServerOptions {
   /** Report max-token termination as an accepted result instead of an infrastructure error. */
   maxTokensAsSuccess?: boolean
+  /** Bounds for non-consuming job observation; omission uses the deployment defaults. */
+  jobs?: SdkJobOptions
 }
 
 function successStatus(reason: string, options: HarnessSdkJsonRpcServerOptions): 'ok' | 'error' {
@@ -93,12 +96,21 @@ export class HarnessSdkJsonRpcServer {
   private shutdownTask: Promise<Record<string, never>> | undefined
   private shuttingDown = false
   private initialized = false
+  private readonly jobObserver: SdkJobObserver
 
   constructor(
     private readonly ctx: Context,
     private readonly transport: JsonRpcTransportPeer,
     private readonly options: HarnessSdkJsonRpcServerOptions = {},
   ) {
+    this.jobObserver = new SdkJobObserver(ctx, transport, id => this.ownedSessionIds.has(id), options.jobs ?? {
+      maxSubscriptions: 32, ackTimeoutMs: 60000, flushMs: 100, maxFrameBytes: 65536,
+    })
+    this.disposers.push(ctx.on('agent/disposed', ({ agent }) => {
+      const sessionId: string = String(agent.session.id)
+      this.ownedSessionIds.delete(sessionId)
+      this.jobObserver.ownerDisposed(sessionId)
+    }))
     const serverOptions = this.options
     this.disposers.push(ctx.on('session/event', (session, event) => {
       const payload: SessionEventNotification = { sessionId: String(session.id), event }
@@ -257,6 +269,7 @@ export class HarnessSdkJsonRpcServer {
 
   private async performShutdown(): Promise<Record<string, never>> {
     this.shuttingDown = true
+    await this.jobObserver.dispose()
     const pendingCreations = [...this.sessionCreations.values()]
     await Promise.allSettled(pendingCreations)
     this.sessionCreations.clear()
@@ -291,6 +304,11 @@ export class HarnessSdkJsonRpcServer {
    * @returns the handler's result, to be serialized as the response.
    */
   async handleRequest(method: string, params: Record<string, unknown> | undefined): Promise<unknown> {
+    if (method.startsWith('job/')) {
+      if (!this.initialized || this.shuttingDown) throw new Error('SDK server is not ready')
+      if (!['job/list', 'job/read', 'job/subscribe', 'job/follow', 'job/unsubscribe'].includes(method)) throw new Error(`unknown SDK job method: ${method}`)
+      return this.jobObserver.handle(method, params ?? {})
+    }
     switch (method) {
       case 'initialize':
         return this.initialize(params as unknown as InitializeParams)
@@ -300,6 +318,23 @@ export class HarnessSdkJsonRpcServer {
         return this.shutdown()
       default:
         throw new Error(`unknown DeepSeek Harness SDK runtime method: ${method}`)
+    }
+  }
+
+  /** Route observation acknowledgements without creating request waiters.
+   * @param method - notification method.
+   * @param params - raw notification parameters.
+   */
+  handleNotification(method: string, params: Record<string, unknown>): void {
+    if (method === 'job/ack') this.jobObserver.acknowledge(params)
+    if (method === 'job/unsubscribe') {
+      // Notifications carry no error channel: a throw here would surface as an
+      // unhandled rejection and fail-loud kill the whole runtime process.
+      try {
+        this.jobObserver.handle(method, params)
+      } catch (error) {
+        this.ctx.logger.warn(`job/unsubscribe notification dropped: ${error instanceof Error ? error.message : String(error)}`)
+      }
     }
   }
 

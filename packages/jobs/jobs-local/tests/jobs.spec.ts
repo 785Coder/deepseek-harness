@@ -6,7 +6,7 @@ import type { Agent } from '@deepseek-ai/dsh-agent'
 import { bindScopeParent, createScope, scopeOf } from '@deepseek-ai/dsh-scope'
 import type { ScopeKey } from '@deepseek-ai/dsh-scope'
 import { JobId } from '@deepseek-ai/dsh-jobs'
-import type { JobHooks, JobKind, JobOutcome, JobSnapshot, JobStart } from '@deepseek-ai/dsh-jobs'
+import type { JobHooks, JobKind, JobOutcome, JobPeek, JobSnapshot, JobStart } from '@deepseek-ai/dsh-jobs'
 import LocalJobRegistry, { type Config as JobsConfig } from '@deepseek-ai/dsh-jobs-local'
 
 declare module '@deepseek-ai/dsh-jobs' {
@@ -1133,5 +1133,117 @@ describe('LocalJobRegistry teardown change notifications', () => {
     await fiber.dispose()
     // stopping (teardown cancel), settlement, then the final empty set.
     expect(seen).toEqual([undefined, undefined, undefined])
+  })
+})
+
+describe('LocalJobRegistry.peek and listBySession', () => {
+  it('lists exactly one session-owned set and never includes unowned work', async () => {
+    const ctx: Context = new Context()
+    const owner = stubAgent(ctx, 'peek-owner')
+    let mine!: ReturnType<typeof producer>
+    let unowned!: ReturnType<typeof producer>
+    try {
+      await ctx.plugin(AgentRegistry)
+      await ctx.plugin(LocalJobRegistry)
+      ctx.jobs.attachController('test-controller')
+      ctx.agents.register(owner)
+      mine = producer({ owner })
+      unowned = producer()
+      const mineId: JobId = ctx.jobs.start(mine.spec)
+      const unownedId: JobId = ctx.jobs.start(unowned.spec)
+      void unownedId
+      const seen: JobSnapshot[] = ctx.jobs.listBySession(owner.id)
+      expect(seen).toEqual([ctx.jobs.get(mineId, owner)])
+      expect(ctx.jobs.listBySession(SessionId('peek-stranger'))).toEqual([])
+    } finally {
+      mine.settle({ status: 'killed' })
+      unowned.settle({ status: 'killed' })
+      await tick()
+      await disposeAgentScope(owner)
+      await ctx.fiber.dispose()
+    }
+  })
+
+  it('reads terminal final output without consuming it or marking it reported', async () => {
+    const ctx: Context = new Context()
+    const owner = stubAgent(ctx, 'peek-owner')
+    let p!: ReturnType<typeof producer>
+    try {
+      await ctx.plugin(AgentRegistry)
+      await ctx.plugin(LocalJobRegistry)
+      ctx.jobs.attachController('test-controller')
+      ctx.agents.register(owner)
+      p = producer({ owner })
+      const id: JobId = ctx.jobs.start(p.spec)
+      // Live: no final output to show yet.
+      expect(ctx.jobs.peek(id, owner.id).text).toBe('')
+      p.settle({ status: 'completed', output: '中文结果' })
+      await tick()
+      const first: JobPeek = ctx.jobs.peek(id, owner.id)
+      expect(first.text).toBe('中文结果')
+      expect(first.snapshot.reported).toBe(false)
+      // A second peek sees the same blob: observation never advances the
+      // model's cursor, and the model read still returns the full output.
+      expect(ctx.jobs.peek(id, owner.id).text).toBe('中文结果')
+      expect(ctx.jobs.read(id, owner).text).toBe('中文结果')
+      expect(ctx.jobs.read(id, owner).text).toBe('中文结果')
+    } finally {
+      await disposeAgentScope(owner)
+      await ctx.fiber.dispose()
+    }
+  })
+
+  it('keeps stream output reserved for the model even after settlement', async () => {
+    const ctx: Context = new Context()
+    const owner = stubAgent(ctx, 'peek-owner')
+    let remaining = 'stream-text'
+    try {
+      await ctx.plugin(AgentRegistry)
+      await ctx.plugin(LocalJobRegistry)
+      ctx.jobs.attachController('test-controller')
+      ctx.agents.register(owner)
+      const p = producer({ owner, readOutput: () => { const out = remaining; remaining = ''; return out } })
+      const id: JobId = ctx.jobs.start(p.spec)
+      p.settle({ status: 'completed' })
+      await tick()
+      // A final-output peek of a stream job shows nothing, and the model's
+      // consuming read is untouched by the peek.
+      expect(ctx.jobs.peek(id, owner.id).text).toBe('')
+      expect(ctx.jobs.read(id, owner).text).toBe('stream-text')
+      expect(ctx.jobs.read(id, owner).text).toBe('')
+    } finally {
+      await disposeAgentScope(owner)
+      await ctx.fiber.dispose()
+    }
+  })
+
+  it('fences both entry points to the exact owning session', async () => {
+    const ctx: Context = new Context()
+    const owner = stubAgent(ctx, 'peek-owner')
+    const other = stubAgent(ctx, 'peek-other')
+    let owned!: ReturnType<typeof producer>
+    let unowned!: ReturnType<typeof producer>
+    try {
+      await ctx.plugin(AgentRegistry)
+      await ctx.plugin(LocalJobRegistry)
+      ctx.jobs.attachController('test-controller')
+      ctx.agents.register(owner)
+      ctx.agents.register(other)
+      owned = producer({ owner })
+      unowned = producer()
+      const id: JobId = ctx.jobs.start(owned.spec)
+      const unownedId: JobId = ctx.jobs.start(unowned.spec)
+      expect(() => ctx.jobs.peek(id, other.id)).toThrow('belongs to another session')
+      expect(() => ctx.jobs.peek(unownedId, owner.id)).toThrow('belongs to another session')
+      expect(() => ctx.jobs.peek(unownedId, other.id)).toThrow('belongs to another session')
+      expect(() => ctx.jobs.peek('bash-99' as JobId, owner.id)).toThrow()
+    } finally {
+      owned.settle({ status: 'killed' })
+      unowned.settle({ status: 'killed' })
+      await tick()
+      await disposeAgentScope(owner)
+      await disposeAgentScope(other)
+      await ctx.fiber.dispose()
+    }
   })
 })

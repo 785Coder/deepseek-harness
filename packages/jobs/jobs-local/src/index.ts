@@ -14,10 +14,11 @@ import z from '@deepseek-ai/schemastery'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import { AnonymousEntries, ScopedLayers, scopeOf } from '@deepseek-ai/dsh-scope'
 import type { ScopeLayer } from '@deepseek-ai/dsh-scope'
+import type { SessionId } from '@deepseek-ai/dsh-session'
 import { deadline, timeoutOf } from '@deepseek-ai/dsh-timeout'
 import { JobRegistry, JobId } from '@deepseek-ai/dsh-jobs'
 import type {
-  JobDoneListener, JobKind, JobOutcome, JobRead, JobSnapshot, JobStart, JobStatus,
+  JobDoneListener, JobKind, JobOutcome, JobPeek, JobRead, JobSnapshot, JobStart, JobStatus,
   JobsChangedListener,
 } from '@deepseek-ai/dsh-jobs'
 
@@ -209,6 +210,24 @@ export class LocalJobRegistry extends JobRegistry {
       ? job.readOutput()
       : isTerminal(job.status) ? job.output ?? '' : ''
     if (isTerminal(job.status)) job.reported = true
+    return { text, snapshot: this.snapshot(job) }
+  }
+
+  listBySession(sessionId: SessionId): JobSnapshot[] {
+    return [...this.store.values()]
+      .filter(job => job.owner !== undefined && job.owner.id === sessionId)
+      .map(job => this.snapshot(job))
+  }
+
+  peek(id: JobId, sessionId: SessionId): JobPeek {
+    const job = this.expect(id)
+    // Session-keyed fence mirroring assertAccess: the unowned bucket is open
+    // to any caller for model reads, but a session-identity door must never
+    // expose an unowned job or another session's output to an observer.
+    if (job.owner === undefined || job.owner.id !== sessionId) {
+      throw new Error(`job ${job.id} belongs to another session`)
+    }
+    const text = isTerminal(job.status) && job.output !== undefined ? job.output : ''
     return { text, snapshot: this.snapshot(job) }
   }
 

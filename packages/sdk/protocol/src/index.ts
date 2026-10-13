@@ -11,6 +11,8 @@
 export { JsonRpcLineTransport, JsonRpcResponseError } from './transport.ts'
 export type { JsonRpcTransportPeer } from './transport.ts'
 export type {
+  SdkJobView, SdkJobChunk, SdkJobFrame, SdkJobErrorKind, SdkJobTarget,
+  SdkJobSubscriptionParams, SdkJobReadResult, SdkJobFrameNotification, SdkJobClosedNotification,
   HarnessSdkNotificationMap,
   HarnessSdkRequestMap,
   HarnessSdkServerRequestMap,

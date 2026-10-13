@@ -1,9 +1,10 @@
 import { describe, expect, it } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
+import type { SessionId } from '@deepseek-ai/dsh-session'
 import { JobId, JobRegistry } from '@deepseek-ai/dsh-jobs'
 import type {
-  JobDoneListener, JobRead, JobSnapshot, JobStart, JobsChangedListener,
+  JobDoneListener, JobPeek, JobRead, JobSnapshot, JobStart, JobsChangedListener,
 } from '@deepseek-ai/dsh-jobs'
 
 /**
@@ -37,6 +38,14 @@ class StubJobRegistry extends JobRegistry {
   }
 
   read(id: JobId): JobRead {
+    return { text: '', snapshot: this.snapshotOf(id) }
+  }
+
+  listBySession(_sessionId: SessionId): JobSnapshot[] {
+    return []
+  }
+
+  peek(id: JobId, _sessionId: SessionId): JobPeek {
     return { text: '', snapshot: this.snapshotOf(id) }
   }
 

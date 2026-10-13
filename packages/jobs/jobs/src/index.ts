@@ -8,8 +8,9 @@
 
 import { Context, Service } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
+import type { SessionId } from '@deepseek-ai/dsh-session'
 import type {
-  JobDoneListener, JobId, JobRead, JobSnapshot, JobStart, JobsChangedListener,
+  JobDoneListener, JobId, JobPeek, JobRead, JobSnapshot, JobStart, JobsChangedListener,
 } from './types.ts'
 
 export { JobId } from './types.ts'
@@ -19,6 +20,7 @@ export type {
   JobKind,
   JobKindMap,
   JobOutcome,
+  JobPeek,
   JobRead,
   JobSnapshot,
   JobStart,
@@ -97,6 +99,30 @@ export abstract class JobRegistry extends Service {
    * @returns a fresh snapshot.
    */
   abstract get(id: JobId, caller?: Agent): JobSnapshot
+
+  /**
+   * List the jobs owned by exactly one session, in registration order.
+   * Session-keyed rather than caller-relative so an out-of-process observer
+   * holding a session identity but no {@link Agent} instance can enumerate.
+   * Unowned jobs are never included. Reads are non-consuming.
+   * @param sessionId - the session whose owned jobs to enumerate.
+   * @returns fresh snapshots.
+   */
+  abstract listBySession(sessionId: SessionId): JobSnapshot[]
+
+  /**
+   * Non-consuming observation read fenced by session identity. Returns the
+   * settled terminal output of a final-output job — or empty text while the
+   * job is live or when the producer declared `readOutput`, whose stream
+   * output stays reserved for the model's consuming reads — without
+   * advancing the model's read cursor and without marking the job reported.
+   * Throws for an unknown job, an unowned job, or a job owned by another
+   * session.
+   * @param id - job to look up.
+   * @param sessionId - observing session checked against the owner.
+   * @returns terminal output (or empty) and a fresh snapshot.
+   */
+  abstract peek(id: JobId, sessionId: SessionId): JobPeek
 
   /**
    * Read the next stream delta, or the idempotent final output after settlement.

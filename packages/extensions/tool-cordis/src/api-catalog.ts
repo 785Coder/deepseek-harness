@@ -1057,6 +1057,18 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
         returns: 'a fresh snapshot.',
       },
       {
+        signature: 'abstract listBySession(sessionId: SessionId): JobSnapshot[]',
+        description: 'List the jobs owned by exactly one session, in registration order. Session-keyed rather than caller-relative so an out-of-process observer holding a session identity but no Agent instance can enumerate. Unowned jobs are never included. Reads are non-consuming.',
+        parameters: [{ name: 'sessionId', description: 'the session whose owned jobs to enumerate.' }],
+        returns: 'fresh snapshots.',
+      },
+      {
+        signature: 'abstract peek(id: JobId, sessionId: SessionId): JobPeek',
+        description: 'Non-consuming observation read fenced by session identity. Returns the settled terminal output of a final-output job — or empty text while the job is live or when the producer declared `readOutput`, whose stream output stays reserved for the model\'s consuming reads — without advancing the model\'s read cursor and without marking the job reported. Throws for an unknown job, an unowned job, or a job owned by another session.',
+        parameters: [{ name: 'id', description: 'job to look up.' }, { name: 'sessionId', description: 'observing session checked against the owner.' }],
+        returns: 'terminal output (or empty) and a fresh snapshot.',
+      },
+      {
         signature: 'abstract read(id: JobId, caller?: Agent): JobRead',
         description: 'Read the next stream delta, or the idempotent final output after settlement. A terminal read marks the job reported. Throws for an unknown or foreign job.',
         parameters: [{ name: 'id', description: 'job to read.' }, { name: 'caller', description: 'reading agent checked against the owner.' }],
@@ -4213,6 +4225,10 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   {
     name: 'JobOutcome',
     declaration: 'export interface JobOutcome {\n    status: \'completed\' | \'killed\' | \'failed\';\n    detail?: string;\n    output?: string;\n}',
+  },
+  {
+    name: 'JobPeek',
+    declaration: 'export interface JobPeek {\n    text: string;\n    snapshot: JobSnapshot;\n}',
   },
   {
     name: 'JobRead',

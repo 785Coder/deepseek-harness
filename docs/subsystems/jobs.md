@@ -152,9 +152,23 @@ interface JobRead {
 }
 ```
 
+```ts type-equiv
+/** Output and post-peek state returned by {@link JobRegistry.peek}. */
+interface JobPeek {
+  /**
+   * Terminal output of a final-output job, or empty while the job is live or
+   * when the producer declared `readOutput` (stream output is reserved for
+   * the model's consuming reads). Never consumed by this read.
+   */
+  text: string
+  /** The job's state at peek time. */
+  snapshot: JobSnapshot
+}
+```
+
 ## Service behavior
 
-The abstract [`JobRegistry`](../../packages/jobs/jobs/src/index.ts) Service Definition specifies atomic `start`, caller-scoped `get` and `list`, `read`, `kill`, bounded `wait`, failure-isolated `onJobDone` and `onJobsChanged` listeners, and `attachController`; [`LocalJobRegistry`](../../packages/jobs/jobs-local/src/index.ts) is the process-local Service Provider. Authorization compares owner sessions; owner cleanup and admission use the exact registered `Agent` instance. The local provider's positive-safe-integer `maxConcurrentJobsPerOwner` config defaults to `10` and counts `running` plus `stopping` records per exact owner, with one shared bucket for unowned jobs; terminal producer settlement releases capacity. See [`dsh-jobs`](../../packages/jobs/jobs/README.md) for the Service Definition contract, [`dsh-jobs-local`](../../packages/jobs/jobs-local/README.md) for the registry lifecycle and admission policy, and [`dsh-tool-jobs`](../../packages/jobs/tool-jobs/README.md) for the model-facing Consumer.
+The abstract [`JobRegistry`](../../packages/jobs/jobs/src/index.ts) Service Definition specifies atomic `start`, caller-scoped `get` and `list`, session-scoped `listBySession`, `read`, the non-consuming session-scoped `peek`, `kill`, bounded `wait`, failure-isolated `onJobDone` and `onJobsChanged` listeners, and `attachController`; [`LocalJobRegistry`](../../packages/jobs/jobs-local/src/index.ts) is the process-local Service Provider. Authorization compares owner sessions; owner cleanup and admission use the exact registered `Agent` instance. `listBySession` and `peek` fence to the exact owning `SessionId` and never advance the model's cursor or claim `reported`, so SDK and Web observation can read alongside the model. The local provider's positive-safe-integer `maxConcurrentJobsPerOwner` config defaults to `10` and counts `running` plus `stopping` records per exact owner, with one shared bucket for unowned jobs; terminal producer settlement releases capacity. See [`dsh-jobs`](../../packages/jobs/jobs/README.md) for the Service Definition contract, [`dsh-jobs-local`](../../packages/jobs/jobs-local/README.md) for the registry lifecycle and admission policy, and [`dsh-tool-jobs`](../../packages/jobs/tool-jobs/README.md) for the model-facing Consumer.
 
 <!-- BEGIN GENERATED cordis-surface (gen-cordis-catalog.ts) — do not edit between markers -->
 
@@ -205,6 +219,30 @@ abstract list(caller?: Agent): JobSnapshot[]
  * @returns a fresh snapshot.
  */
 abstract get(id: JobId, caller?: Agent): JobSnapshot
+
+/**
+ * List the jobs owned by exactly one session, in registration order.
+ * Session-keyed rather than caller-relative so an out-of-process observer
+ * holding a session identity but no {@link Agent} instance can enumerate.
+ * Unowned jobs are never included. Reads are non-consuming.
+ * @param sessionId - the session whose owned jobs to enumerate.
+ * @returns fresh snapshots.
+ */
+abstract listBySession(sessionId: SessionId): JobSnapshot[]
+
+/**
+ * Non-consuming observation read fenced by session identity. Returns the
+ * settled terminal output of a final-output job — or empty text while the
+ * job is live or when the producer declared `readOutput`, whose stream
+ * output stays reserved for the model's consuming reads — without
+ * advancing the model's read cursor and without marking the job reported.
+ * Throws for an unknown job, an unowned job, or a job owned by another
+ * session.
+ * @param id - job to look up.
+ * @param sessionId - observing session checked against the owner.
+ * @returns terminal output (or empty) and a fresh snapshot.
+ */
+abstract peek(id: JobId, sessionId: SessionId): JobPeek
 
 /**
  * Read the next stream delta, or the idempotent final output after settlement.
@@ -284,7 +322,7 @@ abstract onJobsChanged(listener: JobsChangedListener): () => void
 abstract attachController(name: string): () => void
 ```
 
-Types: [Agent](core.md)
+Types: [Agent](core.md) · [SessionId](core.md)
 
 Source: [`packages/jobs/jobs/src/index.ts`](../../packages/jobs/jobs/src/index.ts)
 <!-- END GENERATED cordis-surface -->

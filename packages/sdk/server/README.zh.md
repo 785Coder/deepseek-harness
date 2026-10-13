@@ -49,6 +49,14 @@ Stdout 只承载 JSON-RPC 帧，客户端可以逐字节解析；诊断信息应
 
 `initialize` 是运行时就绪边界：服务器由 Loader 组合挂载时，会等待当前插件树完成所有加载任务后再响应，因此首次提示词能够看到 MCP 初始工具发现等异步同级能力。握手返回协议稳定标识 `deepseek-harness-sdk-runtime`。服务器会通过所选适配器校验提供方／模型路由与可选的非空 `reasoningEffort`，再保存这些值；省略时不会保存推理强度，因此模型保留自身默认值。可选的正整数 `maxTokens` 会成为每个 SDK 创建的 agent 及其进程内后代的请求输出上限，省略时则应用所选适配器或提供方路由的默认值。JSON-RPC 请求可能并发分派，因此在一次 `initialize` 成功完成之前，`session/prompt` 会拒绝；客户端必须等待握手完成后再发送提示词。已接受的提示词会把一条带标识的用户消息排入队列，并立即返回 `{ messageId }`；服务器随后把每个持久事实作为 `session.event`、把整个 agent 生命周期的每次状态转换作为 `session.status` 流式发出。它不会把某条助手消息或 `turn/end` 归属于某个提示词，同一会话上的独立请求可以继续排入更多工作。持久化根目录与 persona 来自外围组合。
 
+### 任务观察
+
+`job/list`、`job/read`、`job/subscribe`、`job/follow` 和 `job/unsubscribe` 提供 SDK 所属会话拥有任务的非消费式观察，不开放无 owner 任务。`job.frame` 携带顺序数据，`job.closed` 将观察结束与任务状态分开报告。客户端在请求观察前注册订阅 ID，消费每帧后发送 `job/ack`；每个订阅最多一个未确认帧。关闭观察不会杀死任务。可选 registry 在请求时解析，因此支持晚挂载 jobs 服务。
+
+观察读取是投影：既不推进模型的消费式输出游标，也不会把任务标记为已上报，因此模型读取与完成通知仍能看到全部内容。本运行时上只有已结算的 final-output 任务（例如后台 subagent）暴露其最终文本，以绝对 UTF-8 字节偏移、通过 `from` 寻址；stream 类任务只暴露状态变化。任务记录不持久：记录移除（owner 或服务销毁）会以 `removed` 关闭进行中的 follow，观察也不跨重启持久化。
+
+经校验的部署字段为 `jobMaxSubscriptions`（32）、`jobAckTimeoutMs`（60000）、`jobFlushMs`（100）和 `jobMaxFrameBytes`（65536，按 chunk 的软预算）。慢观察者以 `ack-timeout` 关闭超时，不阻塞交互请求。owner 销毁和 shutdown 会释放观察监听器。
+
 ### 关闭与退出
 
 插件应答 `shutdown`，刷新响应并 dispose 根上下文，使 SDK 持有的 agent、订阅与持久化达到完全停稳，然后以 0 退出。EOF 与信号退出归 app bin 负责，后者也会 dispose 根上下文。仅卸载此插件会停止服务，但不会退出进程。

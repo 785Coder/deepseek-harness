@@ -25,6 +25,14 @@ export const inject = ['agents']
 export interface JsonRpcConfig {
   /** Report max-token turn/subagent termination as a successful SDK result. */
   maxTokensAsSuccess?: boolean
+  /** Maximum active task observers per connection. */
+  jobMaxSubscriptions?: number
+  /** Milliseconds allowed for consuming one task frame. */
+  jobAckTimeoutMs?: number
+  /** Task event coalescing window in milliseconds. */
+  jobFlushMs?: number
+  /** Soft output frame budget in UTF-8 bytes. */
+  jobMaxFrameBytes?: number
   /** Transport input override; production uses `process.stdin`. */
   input?: Readable
   /** Transport output override; production uses `process.stdout`. */
@@ -35,6 +43,10 @@ export interface JsonRpcConfig {
 
 export const Config: Schema<JsonRpcConfig> = Schema.object({
   maxTokensAsSuccess: Schema.boolean().default(false),
+  jobMaxSubscriptions: Schema.number().min(1).step(1).default(32),
+  jobAckTimeoutMs: Schema.number().min(1).step(1).default(60000),
+  jobFlushMs: Schema.number().min(0).step(1).default(100),
+  jobMaxFrameBytes: Schema.number().min(1).step(1).default(65536),
 })
 
 /**
@@ -45,7 +57,13 @@ export const Config: Schema<JsonRpcConfig> = Schema.object({
  */
 export function apply(ctx: Context, config: JsonRpcConfig): void {
   // Cordis applies the schema default before invoking the plugin.
-  const resolvedConfig = config as JsonRpcConfig & { maxTokensAsSuccess: boolean }
+  const resolvedConfig = config as JsonRpcConfig & {
+    maxTokensAsSuccess: boolean
+    jobMaxSubscriptions: number
+    jobAckTimeoutMs: number
+    jobFlushMs: number
+    jobMaxFrameBytes: number
+  }
   // Protocol shutdown owns the complete runtime process, so it must await the
   // root lifecycle (including persistence) before exiting.
   const rootFiber = ctx.root.fiber
@@ -59,6 +77,10 @@ export function apply(ctx: Context, config: JsonRpcConfig): void {
   const transport = new JsonRpcLineTransport(input, output)
   const server = new HarnessSdkJsonRpcServer(ctx, transport, {
     maxTokensAsSuccess: resolvedConfig.maxTokensAsSuccess,
+    jobs: {
+      maxSubscriptions: resolvedConfig.jobMaxSubscriptions, ackTimeoutMs: resolvedConfig.jobAckTimeoutMs,
+      flushMs: resolvedConfig.jobFlushMs, maxFrameBytes: resolvedConfig.jobMaxFrameBytes,
+    },
   })
 
   // Share one exit task so racing shutdown requests cannot dispose the root or
@@ -91,6 +113,8 @@ export function apply(ctx: Context, config: JsonRpcConfig): void {
     }
     return result
   })
+
+  transport.onNotification((method, params) => { server.handleNotification(method, params) })
 
   ctx.effect(() => {
     transport.start()

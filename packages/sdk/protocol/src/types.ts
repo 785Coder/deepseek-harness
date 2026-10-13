@@ -105,8 +105,64 @@ export interface SubagentFinishedNotification {
   lastAssistantMessage?: ContentBlock[]
 }
 
+/** SDK task projection, independent of Host service imports. */
+export interface SdkJobView {
+  id: string
+  kind: string
+  label: string
+  owner?: string
+  status: 'running' | 'stopping' | 'completed' | 'killed' | 'failed'
+  progress?: string
+  detail?: string
+  startedAt: number
+  finishedAt?: number
+  outputLimitBytes?: number
+  output: { total: number; earliest: number; spillPaths?: readonly string[] }
+}
+
+/** Retained output with absolute UTF-8 byte coordinates. */
+export interface SdkJobChunk {
+  at: number
+  text: string
+  channel?: string
+  gapBefore?: true
+}
+
+/** List or non-consuming output observation frame. */
+export type SdkJobFrame =
+  | { type: 'rows'; jobs: readonly SdkJobView[] }
+  | { type: 'opened'; job: SdkJobView; from: number }
+  | { type: 'output'; chunks: readonly SdkJobChunk[]; next: number; lossy?: true }
+  | { type: 'status'; job: SdkJobView }
+
+/** Stable observation failure categories. */
+export type SdkJobErrorKind = 'session-not-owned' | 'job-not-found' | 'invalid-cursor'
+  | 'jobs-unavailable' | 'subscription-limit' | 'ack-timeout' | 'invalid-params' | 'observation-failed'
+
+/** Task query target. */
+export interface SdkJobTarget { sessionId: string; jobId: string; from?: number }
+/** Explicit observation target; client registers this id before sending. */
+export interface SdkJobSubscriptionParams { subscriptionId: string; sessionId: string }
+/** Single non-consuming ring read. */
+export interface SdkJobReadResult {
+  job: SdkJobView
+  chunks: readonly SdkJobChunk[]
+  next: number
+  lossy: boolean
+}
+/** Sequenced frame with a one-frame acknowledgement window. */
+export interface SdkJobFrameNotification { subscriptionId: string; seq: number; frame: SdkJobFrame }
+/** Observation termination, distinct from a task's terminal status. */
+export interface SdkJobClosedNotification {
+  subscriptionId: string
+  reason: 'completed' | 'unsubscribed' | 'removed' | 'owner-disposed' | 'error'
+  error?: { kind: SdkJobErrorKind; message: string }
+}
+
 /** Server-to-client notifications by JSON-RPC method name. */
 export interface HarnessSdkNotificationMap {
+  'job.frame': SdkJobFrameNotification
+  'job.closed': SdkJobClosedNotification
   'session.event': SessionEventNotification
   'session.status': SessionStatusNotification
   'subagent.started': SubagentStartedNotification
@@ -115,6 +171,11 @@ export interface HarnessSdkNotificationMap {
 
 /** Client-to-server request methods with their param and result shapes. */
 export interface HarnessSdkRequestMap {
+  'job/list': { params: { sessionId: string }; result: { jobs: readonly SdkJobView[] } }
+  'job/read': { params: SdkJobTarget; result: SdkJobReadResult }
+  'job/subscribe': { params: SdkJobSubscriptionParams; result: { subscriptionId: string } }
+  'job/follow': { params: SdkJobSubscriptionParams & SdkJobTarget; result: { subscriptionId: string } }
+  'job/unsubscribe': { params: { subscriptionId: string }; result: Record<string, never> }
   'initialize': { params: InitializeParams; result: InitializeResult }
   'session/prompt': { params: SessionPromptParams; result: SessionPromptResult }
   'shutdown': { params: undefined; result: Record<string, never> }
