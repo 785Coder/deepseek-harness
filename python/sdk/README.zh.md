@@ -63,11 +63,11 @@ with DeepSeekHarness(
 
 ## 后台任务
 
-`harness.client.list_jobs(session_id)` 查询 SDK 所属会话拥有的任务。`subscribe_jobs(session_id)` 返回完整列表 `JobRowsFrame` 快照；`follow_job(session_id, job_id, from_offset=...)` 依次返回 `JobOpenedFrame`、`JobOutputFrame` 和 `JobStatusFrame`。`read_job_output()` 单次读取保留的最终输出。这些观察不会消费模型的任务游标或 producer 最终结果。无 owner 任务不开放；子任务须显式指定已授权的子会话 ID。
+`harness.client.list_jobs(session_id)` 查询 SDK 所属会话拥有的任务。`subscribe_jobs(session_id)` 返回完整列表 `JobRowsFrame` 快照；`follow_job(session_id, job_id, from_offset=...)` 依次返回 `JobOpenedFrame`、若干 `JobOutputFrame` 与生命周期 `JobStatusFrame`（终态是订阅结束前最后一个 status 帧）。`read_job_output()` 单次读取保留的最终输出。这些观察不会消费模型的任务游标或 producer 最终结果。无 owner 任务不开放；子任务须显式指定已授权的子会话 ID。
 
 本运行时上只有已结算的 final-output 任务（例如后台 subagent）携带输出；stream 类任务只报告状态变化。
 
-订阅可在 `run()` 返回后继续，但必须保持 client/runtime 存活。使用上下文管理器或调用 `close()` 停止观察，不会取消任务。`next(timeout=...)` 超时抛 `queue.Empty`，正常结束后抛 `StopIteration`，失败抛类型化任务异常。每个订阅支持一个消费者和一个待消费帧；取出帧后返还确认信用，慢消费者可能超时。成功处理输出后再保存帧的 `next`；偏移为 UTF-8 字节。记录移除可能丢失未读输出并抛 `JobRemovedError`。观察不跨运行时重启持久化。
+订阅可在 `run()` 返回后继续，但必须保持 client/runtime 存活。使用上下文管理器或调用 `close()` 停止观察，不会取消任务。`next(timeout=...)` 超时抛 `queue.Empty`，正常结束后抛 `StopIteration`，失败抛类型化任务异常。每个订阅支持一个消费者和一个待消费帧；取出帧后返还确认信用，慢消费者可能超时。成功处理输出后再保存帧的 `next`；偏移为 UTF-8 字节。记录移除可能丢失未读输出并抛 `JobRemovedError`；移除前最后一个 status 帧可能滞后于其前已发生的结算。观察不跨运行时重启持久化。
 
 ## 结果与通知
 

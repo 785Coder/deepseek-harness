@@ -63,11 +63,11 @@ The shipped `sdk-minimal` profile is a standalone explicit tree rather than an o
 
 ## Background jobs
 
-`harness.client.list_jobs(session_id)` queries jobs owned by an SDK-owned session. `subscribe_jobs(session_id)` yields whole-set `JobRowsFrame` snapshots; `follow_job(session_id, job_id, from_offset=...)` yields `JobOpenedFrame`, `JobOutputFrame`, then `JobStatusFrame`. `read_job_output()` reads the retained terminal output once. These observations never consume the model's job cursor or final producer result. Unowned jobs are excluded; child jobs require their explicit authorized child session id.
+`harness.client.list_jobs(session_id)` queries jobs owned by an SDK-owned session. `subscribe_jobs(session_id)` yields whole-set `JobRowsFrame` snapshots; `follow_job(session_id, job_id, from_offset=...)` yields `JobOpenedFrame`, then `JobOutputFrame` frames and lifecycle `JobStatusFrame`s (the terminal status is the last status frame before the subscription ends). `read_job_output()` reads the retained terminal output once. These observations never consume the model's job cursor or final producer result. Unowned jobs are excluded; child jobs require their explicit authorized child session id.
 
 On this runtime only settled final-output jobs (for example background subagents) carry output; stream-kind jobs report status transitions only.
 
-Subscriptions outlive `run()` but require a live client/runtime. Use them as context managers or call `close()` to stop observing without cancelling the job. `next(timeout=...)` raises `queue.Empty` on timeout, `StopIteration` after normal completion, and a typed job exception on failure. Each subscription supports one consumer and one pending frame; consuming a frame returns acknowledgement credit. A slow consumer can time out. Save an output frame's `next` only after processing it; offsets are UTF-8 bytes. Record removal may lose unread output and raises `JobRemovedError`. Observations do not persist across runtime restarts.
+Subscriptions outlive `run()` but require a live client/runtime. Use them as context managers or call `close()` to stop observing without cancelling the job. `next(timeout=...)` raises `queue.Empty` on timeout, `StopIteration` after normal completion, and a typed job exception on failure. Each subscription supports one consumer and one pending frame; consuming a frame returns acknowledgement credit. A slow consumer can time out. Save an output frame's `next` only after processing it; offsets are UTF-8 bytes. Record removal may lose unread output and raises `JobRemovedError`; the last status frame before the removal may lag a settlement that preceded it. Observations do not persist across runtime restarts.
 
 ## Results and notifications
 

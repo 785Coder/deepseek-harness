@@ -53,9 +53,9 @@ Stdout 只承载 JSON-RPC 帧，客户端可以逐字节解析；诊断信息应
 
 `job/list`、`job/read`、`job/subscribe`、`job/follow` 和 `job/unsubscribe` 提供 SDK 所属会话拥有任务的非消费式观察，不开放无 owner 任务。`job.frame` 携带顺序数据，`job.closed` 将观察结束与任务状态分开报告。客户端在请求观察前注册订阅 ID，消费每帧后发送 `job/ack`；每个订阅最多一个未确认帧。关闭观察不会杀死任务。可选 registry 在请求时解析，因此支持晚挂载 jobs 服务。
 
-观察读取是投影：既不推进模型的消费式输出游标，也不会把任务标记为已上报，因此模型读取与完成通知仍能看到全部内容。本运行时上只有已结算的 final-output 任务（例如后台 subagent）暴露其最终文本，以绝对 UTF-8 字节偏移、通过 `from` 寻址；stream 类任务只暴露状态变化。任务记录不持久：记录移除（owner 或服务销毁）会以 `removed` 关闭进行中的 follow，观察也不跨重启持久化。
+观察读取是投影：既不推进模型的消费式输出游标，也不会把任务标记为已上报，因此模型读取与完成通知仍能看到全部内容。本运行时上只有已结算的 final-output 任务（例如后台 subagent）暴露其最终文本，以绝对 UTF-8 字节偏移、通过 `from` 寻址；stream 类任务只暴露状态变化。follow 还可能携带中间生命周期 status 帧（例如 kill 后的 `stopping`）；终态是 `job.closed` 前最后一个 status 帧。任务记录不持久：记录移除（owner 或服务销毁）会以 `removed` 关闭进行中的 follow，观察也不跨重启持久化。由于本运行时的 registry 变更监听器不携带移除快照，`removed` 关闭前的最后一个 status 帧可能滞后于移除前已发生的结算。
 
-经校验的部署字段为 `jobMaxSubscriptions`（32）、`jobAckTimeoutMs`（60000）、`jobFlushMs`（100）和 `jobMaxFrameBytes`（65536，按 chunk 的软预算）。慢观察者以 `ack-timeout` 关闭超时，不阻塞交互请求。owner 销毁和 shutdown 会释放观察监听器。
+经校验的部署字段为 `jobMaxSubscriptions`（32）、`jobAckTimeoutMs`（60000）、`jobFlushMs`（100）和 `jobMaxFrameBytes`（65536，按 chunk 与按帧的软字节预算；预算小于一个码点时整个码点随帧发出）。输出以预算分批的帧交付并携带绝对 `next` 偏移，因此较大的终态文本以有界帧链到达。慢观察者以 `ack-timeout` 关闭超时，不阻塞交互请求。owner 销毁和 shutdown 会释放观察监听器。
 
 ### 关闭与退出
 

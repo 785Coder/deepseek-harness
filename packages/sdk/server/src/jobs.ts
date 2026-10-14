@@ -84,7 +84,8 @@ function isTerminal(status: JobSnapshot['status']): boolean {
 
 /**
  * Cut a settled final-output blob into output chunks from an absolute byte
- * offset, each at most `maxFrameBytes` (split only on code point boundaries).
+ * offset, each at most `maxFrameBytes` (split only on code point boundaries;
+ * a budget smaller than a code point ships that code point whole).
  * @param value - the full terminal text.
  * @param from - the first byte to emit.
  * @param maxFrameBytes - the soft per-chunk budget.
@@ -98,11 +99,55 @@ function outputChunks(value: string, from: number, maxFrameBytes: number): SdkJo
     let end: number = Math.min(at + maxFrameBytes, bytes.length)
     // A budget landing mid-code point resumes at the next boundary.
     while (end > at && ((bytes[end] ?? 0) & 0xc0) === 0x80) end -= 1
-    if (end === at) break
+    if (end === at) {
+      // A budget smaller than the code point at `at`: ship that whole code
+      // point (at most four bytes) rather than strand its bytes.
+      end = at + 1
+      while (end < bytes.length && ((bytes[end] ?? 0) & 0xc0) === 0x80) end += 1
+    }
     chunks.push({ at, text: new TextDecoder('utf-8').decode(bytes.subarray(at, end)) })
     at = end
   }
   return chunks
+}
+
+/** Split one read into frames along the soft per-frame byte budget. */
+function* outputFrames(
+  chunks: readonly SdkJobChunk[],
+  next: number,
+  lossy: boolean,
+  maxFrameBytes: number,
+): Iterable<SdkJobFrame> {
+  let batch: SdkJobChunk[] = []
+  let batchBytes = 0
+  let flaggedLossy = lossy
+  for (const chunk of chunks) {
+    batch.push(chunk)
+    batchBytes += byteLength(chunk.text)
+    if (batchBytes >= maxFrameBytes) {
+      const last = batch[batch.length - 1]
+      /* v8 ignore start -- a non-empty batch always has a last chunk; the arm only discharges noUncheckedIndexedAccess. */
+      const end = last === undefined ? next : last.at + byteLength(last.text)
+      /* v8 ignore stop */
+      yield {
+        type: 'output',
+        chunks: batch,
+        next: end,
+        ...flaggedLossy ? { lossy: true as const } : {},
+      }
+      flaggedLossy = false
+      batch = []
+      batchBytes = 0
+    }
+  }
+  if (batch.length > 0 || flaggedLossy) {
+    yield {
+      type: 'output',
+      chunks: batch,
+      next,
+      ...flaggedLossy ? { lossy: true as const } : {},
+    }
+  }
 }
 
 /** Project one registry snapshot onto the wire view with its output measure. */
@@ -269,14 +314,11 @@ async function* followJob(
   try {
     yield { type: 'opened', job: view, from: request.from }
     lastFrameView = JSON.stringify(view)
-    let emittedThrough = request.from
+    const emittedThrough = request.from
     if (isTerminal(view.status)) {
       const total: number = byteLength(request.initial.text)
       const chunks = outputChunks(request.initial.text, request.from, options.maxFrameBytes)
-      if (chunks.length > 0) {
-        yield { type: 'output', chunks, next: total }
-        emittedThrough = total
-      }
+      yield* outputFrames(chunks, total, false, options.maxFrameBytes)
       yield { type: 'status', job: view }
       lastFrameView = JSON.stringify(view)
       return
@@ -301,10 +343,7 @@ async function* followJob(
         // Drained output first, then one terminal status, then close.
         const total: number = byteLength(peek.text)
         const chunks = outputChunks(peek.text, emittedThrough, options.maxFrameBytes)
-        if (chunks.length > 0) {
-          yield { type: 'output', chunks, next: total }
-          emittedThrough = total
-        }
+        yield* outputFrames(chunks, total, false, options.maxFrameBytes)
         const status = announce(next)
         if (status !== undefined) yield status
         else lastFrameView = JSON.stringify(next)

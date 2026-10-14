@@ -84,3 +84,45 @@ it('observes owned terminal output with credit, without consuming the model resu
     await ctx.fiber.dispose()
   }
 })
+
+it('streams whole-set row updates as owned jobs settle', { timeout: 15_000 }, async () => {
+  const ctx: Context = new Context()
+  const transport: Transport = new Transport()
+  let server: HarnessSdkJsonRpcServer | undefined
+  let settle: (outcome: JobOutcome) => void = () => {}
+  try {
+    await mountAgentLoopTestDependencies(ctx)
+    await ctx.plugin(SessionProjectionRegistry)
+    await ctx.plugin(AgentLoop, { agents: [] })
+    ctx.effect(() => ctx.llm.registerAdapter(['job-test'], new Adapter()))
+    await ctx.plugin(LocalJobRegistry)
+    ctx.jobs.attachController('sdk-test')
+    server = new HarnessSdkJsonRpcServer(ctx, transport, {
+      jobs: { maxSubscriptions: 4, ackTimeoutMs: 1000, flushMs: 0, maxFrameBytes: 65536 },
+    })
+    await server.initialize({ cwd: process.cwd(), provider: 'job-test', model: 'test' })
+    await server.prompt({ sessionId: 'owned', contentBlocks: [{ type: 'text', text: 'hello' }] })
+    const agent = ctx.agents.get(SessionId('owned'))!
+    await agent.whenIdle()
+    const id = ctx.jobs.start({ kind: 'bash', owner: agent, label: 'background', run: () => ({
+      done: new Promise<JobOutcome>((resolve) => { settle = resolve }),
+      cancel: () => { settle({ status: 'killed' }) },
+    }) })
+    await server.handleRequest('job/subscribe', { sessionId: 'owned', subscriptionId: 'rows' })
+    await expect.poll(() => transport.frames.length).toBe(1)
+    expect(transport.frames[0]?.frame).toMatchObject({ type: 'rows', jobs: [{ id: String(id), status: 'running' }] })
+    server.handleNotification('job/ack', { subscriptionId: 'rows', seq: 1 })
+    settle({ status: 'completed', output: 'done' })
+    await expect.poll(() => transport.frames.length).toBe(2)
+    expect(transport.frames[1]?.frame).toMatchObject({
+      type: 'rows', jobs: [{ id: String(id), status: 'completed', output: { total: 4 } }],
+    })
+    server.handleNotification('job/unsubscribe', { subscriptionId: 'rows' })
+    await expect.poll(() => transport.closed.length).toBe(1)
+    expect(transport.closed[0]).toMatchObject({ reason: 'unsubscribed' })
+  } finally {
+    settle({ status: 'killed' })
+    await server?.shutdown()
+    await ctx.fiber.dispose()
+  }
+})

@@ -71,6 +71,59 @@ it('maps a record removal to a terminal frame plus removed close, and keeps unsu
   }
 })
 
+it('batches terminal output into per-frame budgets with chained cursors', async () => {
+  // maxFrameBytes 2 is smaller than every multi-byte code point in the text:
+  // each three-byte chunk ships whole (one over-budget chunk per frame, the
+  // master semantics), and intermediate frames carry the batch's end offset
+  // so the client can resume mid-blob.
+  const text = '中文\n'
+  const frames: { seq: number; frame: object }[] = []
+  const closed: object[] = []
+  const snapshot: JobSnapshot = {
+    id: brandString<JobId>('bash-1'), kind: 'bash', label: 'x', ownerSession: brandString<SessionId>('owned'),
+    status: 'completed', startedAt: 0, reported: false,
+  }
+  const registry = {
+    listBySession: () => [snapshot],
+    peek: () => ({ text, snapshot }),
+    onJobsChanged: () => () => {},
+  }
+  const observer: SdkJobObserver = new SdkJobObserver(
+    { get: (name: string) => name === 'jobs' ? registry : undefined } as unknown as Context,
+    {
+      request: async () => ({}),
+      notify(method, params) {
+        if (method === 'job.frame' && params !== undefined) frames.push(params as { seq: number; frame: object })
+        if (method === 'job.closed' && params !== undefined) closed.push(params)
+      },
+    },
+    () => true,
+    { maxSubscriptions: 4, ackTimeoutMs: 5000, flushMs: 0, maxFrameBytes: 2 },
+  )
+  try {
+    observer.handle('job/follow', { subscriptionId: 'f', sessionId: 'owned', jobId: 'bash-1' })
+    await expect.poll(() => frames.length).toBe(1)
+    expect(frames[0]?.frame).toMatchObject({ type: 'opened' })
+    observer.acknowledge({ subscriptionId: 'f', seq: 1 })
+    await expect.poll(() => frames.length).toBe(2)
+    expect(frames[1]?.frame).toMatchObject({ type: 'output', chunks: [{ at: 0, text: '中' }], next: 3 })
+    observer.acknowledge({ subscriptionId: 'f', seq: 2 })
+    await expect.poll(() => frames.length).toBe(3)
+    expect(frames[2]?.frame).toMatchObject({ type: 'output', chunks: [{ at: 3, text: '文' }], next: 6 })
+    observer.acknowledge({ subscriptionId: 'f', seq: 3 })
+    await expect.poll(() => frames.length).toBe(4)
+    expect(frames[3]?.frame).toMatchObject({ type: 'output', chunks: [{ at: 6, text: '\n' }], next: 7 })
+    observer.acknowledge({ subscriptionId: 'f', seq: 4 })
+    await expect.poll(() => frames.length).toBe(5)
+    expect(frames[4]?.frame).toMatchObject({ type: 'status', job: { status: 'completed', output: { total: 7, earliest: 0 } } })
+    observer.acknowledge({ subscriptionId: 'f', seq: 5 })
+    await expect.poll(() => closed.length).toBe(1)
+    expect(closed[0]).toMatchObject({ reason: 'completed' })
+  } finally {
+    await observer.dispose()
+  }
+})
+
 it('filters unowned jobs, bounds subscriptions and expires slow observers without killing tasks', async () => {
   const ctx: Context = new Context()
   const frames: object[] = []
