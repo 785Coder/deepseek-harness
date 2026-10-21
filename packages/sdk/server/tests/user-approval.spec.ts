@@ -252,7 +252,7 @@ describe('HarnessSdkJsonRpcServer approval relay', () => {
     await server.shutdown()
 
     // Both optional relays remain subscribed independently of mount order.
-    expect(fake.disposers).toHaveLength(7)
+    expect(fake.disposers).toHaveLength(fake.on.mock.calls.length)
     for (const disposer of fake.disposers) {
       expect(disposer).toHaveBeenCalledOnce()
     }

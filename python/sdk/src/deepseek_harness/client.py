@@ -14,7 +14,7 @@ from typing import Callable, TypeAlias, TypeVar
 
 from pydantic import BaseModel
 
-from .errors import JsonRpcError, TransportClosedError
+from .errors import JsonRpcError, SdkProtocolError, TransportClosedError
 from .jobs import (JobView, JobOutputRead, JobRowsSubscription, JobOutputSubscription,
                    JobListResult, JobSubscriptionReceipt, JobRemovedError, JobSubscriptionError,
                    _job_closed_error, job_error, parse_rows, parse_output)
@@ -102,7 +102,7 @@ class HarnessClient:
             return
         shutdown_completed = False
         try:
-            self.request("shutdown", None, response_model=_ShutdownResponse, timeout_seconds=self.config.shutdown_timeout_seconds)
+            self.request("shutdown", None, response_model=_EmptyResponse, timeout_seconds=self.config.shutdown_timeout_seconds)
             shutdown_completed = True
         except Exception as exc:
             self._stderr_lines.append(f"shutdown request failed: {exc}")
@@ -191,6 +191,32 @@ class HarnessClient:
             notification_subscription=notification_subscription,
         )
         return response.messageId
+
+    def resume_session(self, session_id: str) -> None:
+        """Restore a persisted session without sending a prompt; propagate restoration failures."""
+        self.request(
+            "session/resume",
+            {"sessionId": session_id},
+            response_model=_EmptyResponse,
+        )
+
+    def get_working_directory(self, session_id: str) -> str:
+        """Read the effective directory, recovering a missing directory to the Session origin."""
+        response = self.request(
+            "session/working-directory/get",
+            {"sessionId": session_id},
+            response_model=_WorkingDirectoryResponse,
+        )
+        return response.cwd
+
+    def set_working_directory(self, session_id: str, path: str) -> str:
+        """Enter an absolute or Session-relative directory without changing origin or permissions."""
+        response = self.request(
+            "session/working-directory/set",
+            {"sessionId": session_id, "path": path},
+            response_model=_WorkingDirectoryResponse,
+        )
+        return response.cwd
 
     def request(
         self,
@@ -678,7 +704,11 @@ class _SessionPromptResponse(BaseModel):
     messageId: str
 
 
-class _ShutdownResponse(BaseModel):
+class _WorkingDirectoryResponse(BaseModel):
+    cwd: str
+
+
+class _EmptyResponse(BaseModel):
     pass
 
 

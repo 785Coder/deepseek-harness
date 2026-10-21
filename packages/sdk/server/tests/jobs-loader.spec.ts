@@ -42,7 +42,7 @@ it('serves real process output through Loader-mounted stdio SDK with acknowledge
     input.write(JSON.stringify({ jsonrpc: '2.0', method, params, ...(id === undefined ? {} : { id }) }) + '\n')
   }
   try {
-    await mountAgentLoopTestDependencies(ctx)
+    await mountAgentLoopTestDependencies(ctx, { workingDirectory: true })
     ctx.effect(() => ctx.llm.registerAdapter(['job-loader'], new Adapter()))
     ctx.baseUrl = pathToFileURL(root).href + '/'
     await ctx.plugin(Loader)

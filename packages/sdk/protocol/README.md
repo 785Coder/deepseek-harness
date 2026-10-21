@@ -39,6 +39,10 @@ Both wire ends share session methods, explicit task observations, and server-to-
 |---|---|---|
 | client→server | `initialize` | `InitializeParams` → `InitializeResult` |
 | client→server | `session/prompt` | `SessionPromptParams` → `SessionPromptResult` (durable enqueue receipt) |
+| client→server | `session/resume` | `SessionResumeParams` → `{}` |
+| client→server | `session/wait` | `SessionWaitParams` → `{}` |
+| client→server | `session/working-directory/get` | `SessionWorkingDirectoryParams` → `SessionWorkingDirectoryResult` |
+| client→server | `session/working-directory/set` | `SessionWorkingDirectorySetParams` → `SessionWorkingDirectoryResult` |
 | client→server | `shutdown` | no params → `{}` |
 | server→client | `session.event` | `SessionEventNotification` (every session in the runtime, unfiltered) |
 | server→client | `session.status` | `SessionStatusNotification` (whole-agent `running`/`idle` transition) |
@@ -48,6 +52,10 @@ Both wire ends share session methods, explicit task observations, and server-to-
 | server→client | `session/approval` | `SessionApprovalParams` → `ApprovalOutcome` (relay of `ctx.approval`) |
 
 `HarnessSdkRequestMap`, `HarnessSdkServerRequestMap`, and `HarnessSdkNotificationMap` index these shapes by method name; the package root exports them together with the transport. When the `approval` service is mounted, the server relays approval requests for the sessions it owns to the client over `session/approval`, and `ask_user_question` relays over `session/question`.
+
+`session/wait` accepts `{ sessionId }` for an existing SDK-owned session and returns `{}` after the root stays idle and progressing managed descendant work finishes. Idle descendants with parked input remain resident without blocking this wait. Unknown ids and live Agent failures without a newer committed terminal are rejected. Notifications committed during the wait precede its response on the same transport; raw `session.status` transitions retain their whole-agent meaning.
+
+`session/resume` accepts a non-empty persisted `{ sessionId }` and returns `{}` after restoring that exact session. It requires initialization and the original persistence store, sends no new input, and rejects missing, unreadable, incompatible, or occupied sessions without creating a replacement. Historical events remain in the stored log; notifications report newly committed events.
 
 ### Payload semantics
 
@@ -74,7 +82,6 @@ The package is built on one separation: a single newline-delimited transport cla
 | [`src/transport.ts`](src/transport.ts) | `JsonRpcLineTransport`: line framing, request/response/notification dispatch, error mapping, pending-request bookkeeping |
 | [`src/types.ts`](src/types.ts) | Named request/result and notification payload types, indexed by method |
 | [`src/index.ts`](src/index.ts) | Consumer interface: the transport and the named wire types |
-| — | No runtime invariant companion is published; a pure wire library (transport class + type declarations) with no event stream or mutable data relation of its own; both wire ends own their protocol behavior. |
 
 ### Frame dispatch
 
