@@ -107,6 +107,37 @@ describe('local attachment service', () => {
     }
   })
 
+  it('stores files below an explicit absolute root and pages byte ranges', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'dsh-attachment-root-'))
+    try {
+      const service = new LocalAttachmentStore(new Context(), { root })
+      expect(service.root).toBe(root)
+      const fileRef = await service.saveFile({
+        data: Uint8Array.of(0, 1, 2, 3, 4, 5),
+        name: 'report.bin',
+      })
+      expect(service.fileHostPath(fileRef)).toBe(join(
+        root,
+        'files',
+        String(fileRef.attachmentId).slice('sha256:'.length, 'sha256:'.length + 2),
+        String(fileRef.attachmentId).slice('sha256:'.length),
+        'report.bin',
+      ))
+      await expect(service.readFileRange(fileRef, 2, 3)).resolves.toEqual(Buffer.from([2, 3, 4]))
+      await expect(service.readFileRange(fileRef, 5, 3)).resolves.toEqual(Buffer.from([5]))
+      await expect(service.readFileRange(fileRef, 6, 3)).resolves.toEqual(new Uint8Array())
+      await expect(service.readFileRange(fileRef, -1, 3)).rejects
+        .toMatchObject({ code: 'INVALID_ATTACHMENT_RANGE' })
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  it('rejects a non-absolute explicit root', () => {
+    expect(() => new LocalAttachmentStore(new Context(), { root: 'relative/attachments' }))
+      .toThrow(/root must be an absolute path/)
+  })
+
   it('commits a fully prepared image batch in input order', async () => {
     const dshHome = await mkdtemp(join(tmpdir(), 'dsh-attachment-batch-success-'))
     try {

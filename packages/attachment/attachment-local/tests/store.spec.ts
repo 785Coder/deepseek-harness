@@ -82,7 +82,6 @@ afterEach(async () => {
 describe('local attachment store', () => {
   it.skipIf(process.platform === 'win32')('syncs every object ancestor up to the durable boundary before returning', async () => {
     const storageRoot = await root()
-    const base = join(storageRoot, '..', '..')
     const sha256 = createHash('sha256').update(PNG).digest('hex')
     const objects = join(storageRoot, 'objects')
     const bucket = join(objects, sha256.slice(0, 2))
@@ -94,17 +93,13 @@ describe('local attachment store', () => {
     // root; existence alone cannot vouch for a concurrent creator's fsync.
     // Later directory creation can then stop at that process-proven boundary.
     expect(fsControl.syncedDirectories).toEqual([
-      ...parentChainToRoot(base),
+      ...parentChainToRoot(storageRoot),
       // Staging precedes publication because the streamed digest selects the
       // target bucket only after every byte has been written.
       storageRoot,
-      join(storageRoot, '..'),
-      base,
       // bucket chain: every parent entry between the bucket and the boundary.
       objects,
       storageRoot,
-      join(storageRoot, '..'),
-      base,
       // publication: the settled object's bucket and its parent for the rename.
       bucket,
       objects,

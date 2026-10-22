@@ -8,7 +8,7 @@
  * @module @deepseek-ai/dsh-sdk-protocol/types
  */
 
-import type { ImageAttachmentRef } from '@deepseek-ai/dsh-attachment'
+import type { FileAttachmentRef, ImageAttachmentRef } from '@deepseek-ai/dsh-attachment'
 import type { ContentBlock, ReasoningEffortId, ToolCallId } from '@deepseek-ai/dsh-llm'
 import type { AssistantStreamFrame } from '@deepseek-ai/dsh-agent'
 import type { SessionEvent } from '@deepseek-ai/dsh-session'
@@ -248,20 +248,45 @@ export interface SessionRenameResult {
   seq: number
 }
 
-/** Parameters for reading one image attachment a session references. */
+/** Parameters for reading one file or image attachment a session references. */
 export interface SessionAttachmentParams {
   /** Session that must already reference the attachment. */
   sessionId: string
-  /** Attachment identity taken from an image block in this session's log. */
+  /** Attachment identity taken from a file or image block in this session's log. */
   attachmentId: string
+  /** Zero-based byte offset; omitted reads from the beginning. */
+  offset?: number
+  /** Maximum bytes to return; omitted returns the complete payload. */
+  length?: number
 }
 
-/** One durable image reference and its bytes. */
+/** One durable attachment reference and one base64 payload slice. */
 export interface SessionAttachmentResult {
-  /** Durable normalized reference the store resolves. */
-  attachment: ImageAttachmentRef
-  /** Base64-encoded image payload. */
+  /** Durable normalized image or verbatim file reference the store resolves. */
+  attachment: ImageAttachmentRef | FileAttachmentRef
+  /** Base64-encoded bytes for this slice. */
   data: string
+  /** Absolute byte offset of this slice. */
+  offset: number
+  /** Exact total byte length of the stored object. */
+  totalBytes: number
+  /** Next offset to request, or null when this slice reached the end. */
+  nextOffset: number | null
+}
+
+/** Parameters for importing one file from a session's execution world. */
+export interface SessionAttachmentImportParams {
+  /** Session whose working directory scopes the source path. */
+  sessionId: string
+  /** Absolute path, or a path relative to the session working directory. */
+  path: string
+  /** Optional display name; defaults to the source basename. */
+  name?: string
+}
+
+/** One durable verbatim file reference produced by an import. */
+export interface SessionAttachmentImportResult {
+  attachment: FileAttachmentRef
 }
 
 /** Parameters for selecting the model one session uses from its next step on. */
@@ -592,6 +617,7 @@ export interface HarnessSdkRequestMap {
   'session/rename': { params: SessionRenameParams; result: SessionRenameResult }
   'session/queue/update': { params: SessionQueueUpdateParams; result: SessionQueueUpdateResult }
   'session/attachment/read': { params: SessionAttachmentParams; result: SessionAttachmentResult }
+  'session/attachment/import': { params: SessionAttachmentImportParams; result: SessionAttachmentImportResult }
   'session/model/select': { params: SessionModelSelectParams; result: SessionModelSelectResult }
   'session/sync': { params: SessionSyncParams; result: SessionSyncResult }
   'session/list': { params: SessionListParams; result: SessionListResult }

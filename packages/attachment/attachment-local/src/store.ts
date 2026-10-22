@@ -183,6 +183,20 @@ async function ensureDurableHome(path: string): Promise<string> {
 }
 
 /**
+ * Pick the durable boundary for one storage root. The default layout is
+ * `<home>/attachments/v1`, so its grandparent is the home that owns the
+ * attachment tree. A caller-supplied workspace root may sit directly below a
+ * shared directory such as `/tmp`; using that shared directory as the
+ * boundary would chmod it, so fall back to the root itself.
+ */
+function durableBoundary(root: string): string {
+  // The storage root is the only directory this service owns. Proving its
+  // parent durable must not chmod a shared ancestor such as the agent
+  // workspace or /tmp; the root itself is created private and fsynced.
+  return resolve(root)
+}
+
+/**
  * Publish one already verified normalized image below a versioned attachment root.
  * @param root - absolute `DSH_HOME/attachments/v1` root.
  * @param prepared - deterministic normalized bytes and reference.
@@ -277,7 +291,7 @@ export async function publishImmutableAlias(
 ): Promise<void> {
   const parent = dirname(target)
   try {
-    const boundary = await ensureDurableHome(dirname(dirname(resolve(root))))
+    const boundary = await ensureDurableHome(durableBoundary(root))
     await ensureDurableDirectory(parent, boundary)
     try {
       await link(source, target)
@@ -315,7 +329,7 @@ async function stageImmutableObject(
   // Establish DSH_HOME itself against the filesystem root once per process.
   // Every process performs that proof independently, so observing a directory
   // another process created can never be mistaken for durable publication.
-  const boundary = await ensureDurableHome(dirname(dirname(resolve(root))))
+  const boundary = await ensureDurableHome(durableBoundary(root))
   await ensureDurableDirectory(staging, boundary)
   const temporary = join(staging, randomUUID())
   let handle

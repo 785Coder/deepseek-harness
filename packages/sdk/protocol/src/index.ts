@@ -31,6 +31,8 @@ export type {
   SessionAnswerResult,
   SessionAttachmentParams,
   SessionAttachmentResult,
+  SessionAttachmentImportParams,
+  SessionAttachmentImportResult,
   SessionCancelParams,
   SessionCommandParams,
   SessionCommandResult,

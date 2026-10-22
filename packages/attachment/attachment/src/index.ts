@@ -229,6 +229,52 @@ export abstract class AttachmentStore extends Service {
   }
 
   /**
+   * Read one bounded byte range of a stored verbatim file. The default walks
+   * `readFileStream` from the beginning so providers that only expose a stream
+   * still support ranged SDK reads; host-file providers override this with a
+   * direct range read.
+   * @param ref - durable reference from the session log.
+   * @param offset - zero-based absolute byte offset.
+   * @param length - maximum bytes to return.
+   * @param signal - optional cancellation for backend reads and verification work.
+   * @returns bytes in [offset, offset + length), possibly shorter at EOF.
+   */
+  async readFileRange(
+    ref: FileAttachmentRef,
+    offset: number,
+    length: number,
+    signal?: AbortSignal,
+  ): Promise<Uint8Array> {
+    if (!Number.isSafeInteger(offset) || offset < 0) {
+      throw new AttachmentError('File attachment range offset is invalid.', 'INVALID_ATTACHMENT_RANGE')
+    }
+    if (!Number.isSafeInteger(length) || length <= 0) {
+      throw new AttachmentError('File attachment range length is invalid.', 'INVALID_ATTACHMENT_RANGE')
+    }
+    const chunks: Uint8Array[] = []
+    let position = 0
+    let remaining = length
+    for await (const chunk of this.readFileStream(ref, signal)) {
+      signal?.throwIfAborted()
+      const chunkEnd = position + chunk.byteLength
+      if (chunkEnd <= offset) {
+        position = chunkEnd
+        continue
+      }
+      const start = Math.max(0, offset - position)
+      const end = Math.min(chunk.byteLength, start + remaining)
+      const part = chunk.subarray(start, end)
+      if (part.byteLength > 0) {
+        chunks.push(part)
+        remaining -= part.byteLength
+      }
+      position = chunkEnd
+      if (remaining === 0) break
+    }
+    return Buffer.concat(chunks)
+  }
+
+  /**
    * Locate the verbatim stored file object in the harness host filesystem.
    * @param ref - durable file reference.
    * @returns an absolute host path, or undefined when this backend is not host-file-backed.

@@ -93,10 +93,19 @@ class SessionModelSelectionResult(BaseModel):
 
 
 class SessionAttachmentResult(BaseModel):
-    """One durable image reference and its base64 payload."""
+    """One durable file/image reference and one base64 payload slice."""
 
     attachment: dict[str, PydanticJsonValue]
     data: str
+    offset: int = 0
+    totalBytes: int = 0
+    nextOffset: int | None = None
+
+
+class SessionAttachmentImportResult(BaseModel):
+    """One durable verbatim file reference produced by an import."""
+
+    attachment: dict[str, PydanticJsonValue]
 
 
 class SessionQuestionWaitResult(BaseModel):

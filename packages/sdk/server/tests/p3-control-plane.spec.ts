@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -88,8 +88,88 @@ describe('SDK P3 control plane: attachment read', () => {
       data: { content: [{ type: 'text', text: 'see' }, { type: 'image', attachment: ref }] },
     }])
     await expect(server.readAttachment({ sessionId: 'image', attachmentId: 'sha256:image' }))
-      .resolves.toEqual({ attachment: ref, data: 'AQID' })
+      .resolves.toEqual({
+        attachment: ref,
+        data: 'AQID',
+        offset: 0,
+        totalBytes: 3,
+        nextOffset: null,
+      })
     expect(readImage).toHaveBeenCalledWith(ref)
+    await server.shutdown()
+  })
+
+  it('pages a referenced image with offset and length', async () => {
+    const { server } = imageRuntime([{
+      type: 'user/message',
+      seq: 0,
+      time: 0,
+      data: { content: [{ type: 'image', attachment: ref }] },
+    }])
+    await expect(server.readAttachment({
+      sessionId: 'image',
+      attachmentId: 'sha256:image',
+      offset: 1,
+      length: 2,
+    })).resolves.toEqual({
+      attachment: ref,
+      data: 'AgM=',
+      offset: 1,
+      totalBytes: 3,
+      nextOffset: null,
+    })
+    await server.shutdown()
+  })
+
+  function fileRuntime(events: readonly unknown[], bytes: Uint8Array) {
+    const session = {
+      id: SessionId('file'),
+      header: { id: 'file', createdAt: 0 },
+      snapshotEvents: () => events,
+    }
+    const agent = { id: SessionId('file'), session } as unknown as Agent
+    const readFileRange = vi.fn(async (_ref: unknown, offset: number, length: number) =>
+      bytes.slice(offset, offset + length))
+    const ctx = {
+      on: vi.fn(() => () => undefined),
+      agents: { get: () => agent, create: vi.fn() },
+      sessions: { get: (id: string) => id === 'file' ? session : undefined },
+      get: (name: string) => name === 'attachments'
+        ? { readFileRange }
+        : name === 'sessionQuery'
+          ? { readSession: async () => ({ session: session.header, events }) }
+          : undefined,
+    } as unknown as Context
+    const server = new HarnessSdkJsonRpcServer(ctx, { request: async () => { throw new Error('unexpected') }, notify: () => {} })
+    const attached = server as unknown as {
+      initialized: boolean
+      sessions: Map<string, { handle: { agent: Agent; dispose(): Promise<void> }; failure: undefined }>
+    }
+    attached.initialized = true
+    attached.sessions.set('file', { handle: { agent, dispose: async () => {} }, failure: undefined })
+    return { server, readFileRange }
+  }
+
+  it('pages a referenced verbatim file with offset and length', async () => {
+    const fileRef = { attachmentId: 'sha256:file', name: 'notes.txt', bytes: 5 }
+    const { server, readFileRange } = fileRuntime([{
+      type: 'user/message',
+      seq: 0,
+      time: 0,
+      data: { content: [{ type: 'file', attachment: fileRef }] },
+    }], Uint8Array.of(1, 2, 3, 4, 5))
+
+    await expect(server.readAttachment({
+      sessionId: 'file', attachmentId: 'sha256:file', offset: 0, length: 2,
+    })).resolves.toEqual({
+      attachment: fileRef, data: 'AQI=', offset: 0, totalBytes: 5, nextOffset: 2,
+    })
+    await expect(server.readAttachment({
+      sessionId: 'file', attachmentId: 'sha256:file', offset: 4, length: 2,
+    })).resolves.toEqual({
+      attachment: fileRef, data: 'BQ==', offset: 4, totalBytes: 5, nextOffset: null,
+    })
+    expect(readFileRange).toHaveBeenNthCalledWith(1, fileRef, 0, 2)
     await server.shutdown()
   })
 
@@ -101,6 +181,73 @@ describe('SDK P3 control plane: attachment read', () => {
       'attachment-invalid',
     )
     expect(readImage).not.toHaveBeenCalled()
+    await server.shutdown()
+  })
+})
+
+describe('SDK P3 control plane: attachment import', () => {
+  it('imports one file below the session working directory', async () => {
+    const root: string = await mkdtemp(join(tmpdir(), 'sdk-import-'))
+    cleanups.push(() => rm(root, { recursive: true, force: true }))
+    await writeFile(join(root, '报告.txt'), 'hello')
+    const session = { id: SessionId('import'), header: { id: 'import', createdAt: 0 }, snapshotEvents: () => [] }
+    const agent = { id: SessionId('import'), session } as unknown as Agent
+    const saveFileStream = vi.fn(async (input: {
+      data: AsyncIterable<Uint8Array>
+      name?: string
+    }) => {
+      let bytes = 0
+      for await (const chunk of input.data) bytes += chunk.byteLength
+      return { attachmentId: 'sha256:file', name: input.name ?? 'input', bytes }
+    })
+    const ctx = {
+      on: vi.fn(() => () => undefined),
+      agents: { get: () => agent, create: vi.fn() },
+      sessions: { get: (id: string) => id === 'import' ? session : undefined },
+      workingDirectory: { ensure: async () => root },
+      get: (name: string) => name === 'attachments' ? { saveFileStream } : undefined,
+    } as unknown as Context
+    const server = new HarnessSdkJsonRpcServer(ctx, { request: async () => { throw new Error('unexpected') }, notify: () => {} })
+    const attached = server as unknown as {
+      initialized: boolean
+      sessions: Map<string, { handle: { agent: Agent; dispose(): Promise<void> }; failure: undefined }>
+    }
+    attached.initialized = true
+    attached.sessions.set('import', { handle: { agent, dispose: async () => {} }, failure: undefined })
+
+    await expect(server.importAttachment({ sessionId: 'import', path: '报告.txt' }))
+      .resolves.toEqual({ attachment: { attachmentId: 'sha256:file', name: '报告.txt', bytes: 5 } })
+    expect(saveFileStream).toHaveBeenCalledOnce()
+    await server.shutdown()
+  })
+
+  it('rejects a source outside the session working directory', async () => {
+    const root: string = await mkdtemp(join(tmpdir(), 'sdk-import-root-'))
+    const outside: string = await mkdtemp(join(tmpdir(), 'sdk-import-outside-'))
+    cleanups.push(() => rm(root, { recursive: true, force: true }))
+    cleanups.push(() => rm(outside, { recursive: true, force: true }))
+    await writeFile(join(outside, 'secret.txt'), 'secret')
+    const session = { id: SessionId('escape'), header: { id: 'escape', createdAt: 0 }, snapshotEvents: () => [] }
+    const agent = { id: SessionId('escape'), session } as unknown as Agent
+    const ctx = {
+      on: vi.fn(() => () => undefined),
+      agents: { get: () => agent, create: vi.fn() },
+      sessions: { get: (id: string) => id === 'escape' ? session : undefined },
+      workingDirectory: { ensure: async () => root },
+      get: (name: string) => name === 'attachments' ? { saveFileStream: vi.fn() } : undefined,
+    } as unknown as Context
+    const server = new HarnessSdkJsonRpcServer(ctx, { request: async () => { throw new Error('unexpected') }, notify: () => {} })
+    const attached = server as unknown as {
+      initialized: boolean
+      sessions: Map<string, { handle: { agent: Agent; dispose(): Promise<void> }; failure: undefined }>
+    }
+    attached.initialized = true
+    attached.sessions.set('escape', { handle: { agent, dispose: async () => {} }, failure: undefined })
+
+    await expectSdkErrorAsync(
+      server.importAttachment({ sessionId: 'escape', path: join(outside, 'secret.txt') }),
+      'invalid-params',
+    )
     await server.shutdown()
   })
 })

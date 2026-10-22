@@ -100,6 +100,15 @@ def test_model_selection_and_attachment_requests() -> None:
     assert recorder.last == ("session/attachment/read",
                              {"sessionId": "s1", "attachmentId": "sha256:image"})
 
+    client.read_session_attachment("s1", "sha256:file", offset=5, length=10)
+    assert recorder.last == ("session/attachment/read",
+                             {"sessionId": "s1", "attachmentId": "sha256:file",
+                              "offset": 5, "length": 10})
+
+    client.import_session_attachment("s1", "report.txt", "报告.txt")
+    assert recorder.last == ("session/attachment/import",
+                             {"sessionId": "s1", "path": "report.txt", "name": "报告.txt"})
+
 
 def test_catalog_requests_omit_absent_options() -> None:
     client, recorder = _client()

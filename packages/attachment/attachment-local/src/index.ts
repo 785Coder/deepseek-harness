@@ -1,6 +1,6 @@
 /** Local durable attachment backend rooted below `DSH_HOME`. @module @deepseek-ai/dsh-attachment-local */
 
-import { join } from 'node:path'
+import { isAbsolute, join, resolve } from 'node:path'
 import { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import { AttachmentStore } from '@deepseek-ai/dsh-attachment'
@@ -20,7 +20,7 @@ import type { NormalizationPolicy } from './normalization.ts'
 import { CompressionLimiter, compressionFailure } from './compression-limiter.ts'
 import { commitPreparedImageFile, normalizedImagePath, prepareImageFile, readImageFile, validateImageFile } from './store.ts'
 import {
-  readFileStreamVerbatim, saveFileStreamVerbatim, saveFileVerbatim, storedFilePath,
+  readFileRangeVerbatim, readFileStreamVerbatim, saveFileStreamVerbatim, saveFileVerbatim, storedFilePath,
 } from './file-store.ts'
 import { readRequestImageFile, requestImageVariantId } from './request-image.ts'
 
@@ -61,6 +61,12 @@ export const MAX_IMAGE_COMPRESSION_CONCURRENCY = 8
 export interface Config {
   /** Explicit harness home; omitted follows `DSH_HOME`, then `~/.dsh`. */
   dshHome?: string
+  /**
+   * Absolute durable storage root. Omitted keeps `<dshHome>/attachments/v1`;
+   * an explicit root lets one Session keep its attachment objects inside its
+   * own workspace while request-image caches still follow `dshHome`.
+   */
+  root?: string
   /** Maximum encoded bytes accepted for one submitted image. Default: 20 MiB. */
   maxImageBytes?: number
   /** Maximum image count accepted in one submitted message. Default: 20. */
@@ -147,6 +153,7 @@ class SharedRequest<T> {
 export class LocalAttachmentStore extends AttachmentStore {
   static Config: z<Config> = z.object({
     dshHome: z.string(),
+    root: z.string(),
     maxImageBytes: z.number().step(1).min(1).default(DEFAULT_MAX_IMAGE_BYTES),
     maxImagesPerMessage: z.number().step(1).min(1).default(DEFAULT_MAX_IMAGES_PER_MESSAGE),
     maxMessageImageBytes: z.number().step(1).min(1).default(DEFAULT_MAX_MESSAGE_IMAGE_BYTES),
@@ -173,7 +180,12 @@ export class LocalAttachmentStore extends AttachmentStore {
   constructor(ctx: Context, config: Config) {
     super(ctx)
     const dshHome = resolveDshHome(config.dshHome)
-    this.root = join(dshHome, 'attachments', 'v1')
+    // Explicit roots are absolute so a workspace mount cannot silently resolve
+    // against the runtime's launch directory and split one Session's objects.
+    if (config.root !== undefined && !isAbsolute(config.root)) {
+      throw new Error('attachment-local: root must be an absolute path')
+    }
+    this.root = config.root === undefined ? join(dshHome, 'attachments', 'v1') : resolve(config.root)
     this.cacheRoot = dshCachePath({ dshHome }, 'attachments')
     this.imageLimits = Object.freeze({
       maxImageBytes: config.maxImageBytes ?? DEFAULT_MAX_IMAGE_BYTES,
@@ -239,6 +251,15 @@ export class LocalAttachmentStore extends AttachmentStore {
 
   override readFileStream(ref: FileAttachmentRef, signal?: AbortSignal): AsyncIterable<Uint8Array> {
     return readFileStreamVerbatim(this.root, ref, signal)
+  }
+
+  override readFileRange(
+    ref: FileAttachmentRef,
+    offset: number,
+    length: number,
+    signal?: AbortSignal,
+  ): Promise<Uint8Array> {
+    return readFileRangeVerbatim(this.root, ref, offset, length, signal)
   }
 
   override fileHostPath(ref: FileAttachmentRef): string {

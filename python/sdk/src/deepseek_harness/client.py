@@ -19,7 +19,7 @@ from .jobs import (JobView, JobOutputRead, JobRowsSubscription, JobOutputSubscri
                    JobListResult, JobSubscriptionReceipt, JobRemovedError, JobSubscriptionError,
                    _job_closed_error, job_error, parse_rows, parse_output)
 from .models import (IncomingRequest, InitializeResponse, JsonObject, JsonValue, Notification,
-                     SessionAnswerResult, SessionQuestionWaitResult, SessionAttachmentResult, SessionCommandResult, SessionCreateResult,
+                     SessionAnswerResult, SessionQuestionWaitResult, SessionAttachmentResult, SessionAttachmentImportResult, SessionCommandResult, SessionCreateResult,
                      SessionForkResult, SessionHistoryResult, SessionListResult,
                      SessionModelSelectionResult, SessionProjections, SessionSearchResult,
                      SessionSyncResult, SessionTitle)
@@ -328,12 +328,35 @@ class HarnessClient:
             payload["reasoningEffort"] = reasoning_effort
         return self.request("session/model/select", payload, response_model=SessionModelSelectionResult)
 
-    def read_session_attachment(self, session_id: str, attachment_id: str) -> SessionAttachmentResult:
-        """Read one image the session already references; an unreferenced id is refused."""
+    def read_session_attachment(
+        self,
+        session_id: str,
+        attachment_id: str,
+        *,
+        offset: int | None = None,
+        length: int | None = None,
+    ) -> SessionAttachmentResult:
+        """Read one referenced file/image, optionally one bounded byte range."""
+        payload: JsonObject = {"sessionId": session_id, "attachmentId": attachment_id}
+        if offset is not None:
+            payload["offset"] = offset
+        if length is not None:
+            payload["length"] = length
         return self.request(
             "session/attachment/read",
-            {"sessionId": session_id, "attachmentId": attachment_id},
+            payload,
             response_model=SessionAttachmentResult,
+        )
+
+    def import_session_attachment(self, session_id: str, path: str, name: str | None = None) -> SessionAttachmentImportResult:
+        """Import one file below the session working directory into durable storage."""
+        payload: JsonObject = {"sessionId": session_id, "path": path}
+        if name is not None:
+            payload["name"] = name
+        return self.request(
+            "session/attachment/import",
+            payload,
+            response_model=SessionAttachmentImportResult,
         )
 
     def question_wait(self, session_id: str, call_id: str, *, release: bool = False) -> int | None:

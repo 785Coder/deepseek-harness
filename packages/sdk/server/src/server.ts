@@ -7,11 +7,13 @@
 
 import type { Context } from '@deepseek-ai/cordis'
 import { randomUUID } from 'node:crypto'
-import { installModelSelectionProjection, installSessionListMetadata, sessionProjectionHints, paginateSessionHistory, referencedImage } from '@deepseek-ai/dsh-api-session-controller/shared'
-import { resolve } from 'node:path'
+import { createReadStream } from 'node:fs'
+import { realpath, stat } from 'node:fs/promises'
+import { installModelSelectionProjection, installSessionListMetadata, sessionProjectionHints, paginateSessionHistory, referencedFile, referencedImage } from '@deepseek-ai/dsh-api-session-controller/shared'
+import { basename, isAbsolute, relative, resolve } from 'node:path'
 import { brandString } from '@deepseek-ai/dsh-brand'
 import { installModelSelection, type Agent, type AgentHandle, type AgentOptions, type AgentSetup, type ModelSelection, type ModelSelectionRef } from '@deepseek-ai/dsh-agent'
-import { admitEncodedImages, AttachmentError, type EncodedImageAttachment, type ImageAttachmentRef } from '@deepseek-ai/dsh-attachment'
+import { admitEncodedImages, AttachmentError, type EncodedImageAttachment, type FileAttachmentRef, type ImageAttachmentRef } from '@deepseek-ai/dsh-attachment'
 // Side-effect type import: resolves the optional `commands` lookup without a
 // value dependency on the slash-command registry.
 import type {} from '@deepseek-ai/dsh-commands'
@@ -41,6 +43,8 @@ import type {
   SessionAnswerResult,
   SessionAttachmentParams,
   SessionAttachmentResult,
+  SessionAttachmentImportParams,
+  SessionAttachmentImportResult,
   SessionCancelParams,
   SessionCommandParams,
   SessionCommandResult,
@@ -106,6 +110,8 @@ function sdkError(reason: SdkErrorReason, message: string, data: Record<string, 
 /** Publication-window retention bounds for unowned session prefixes. */
 const MAX_BUFFERED_SESSIONS = 64
 const MAX_BUFFERED_EVENTS = 512
+/** Upper bound for one ranged attachment read; callers page larger objects. */
+const MAX_ATTACHMENT_READ_BYTES = 8 * 1024 * 1024
 
 /** Request methods this build serves; advertised by `initialize`. */
 const SDK_REQUEST_METHODS = [
@@ -126,6 +132,7 @@ const SDK_REQUEST_METHODS = [
   'session/answer',
   'session/question/wait',
   'session/attachment/read',
+  'session/attachment/import',
   'session/model/select',
   'session/resume',
   'session/wait',
@@ -710,30 +717,115 @@ export class HarnessSdkJsonRpcServer {
   }
 
   /**
-   * Read one image attachment a session already references.
+   * Read one file or image attachment a session already references.
    * Mirrors the Web control plane: the session log must carry the reference,
-   * so an attachment id alone never authorizes a store read.
-   * @param params - session and the attachment identity from its log.
-   * @returns the durable reference and its base64 payload.
+   * so an attachment id alone never authorizes a store read. Optional
+   * offset/length page large files without materializing them in one response.
+   * @param params - session, attachment identity, and optional byte range.
+   * @returns the durable reference and one base64 payload slice.
    */
   async readAttachment(params: SessionAttachmentParams): Promise<SessionAttachmentResult> {
     if (!this.initialized) throw new Error('SDK server is not initialized')
+    const offset = params.offset ?? 0
+    if (!Number.isSafeInteger(offset) || offset < 0) {
+      throw sdkError('invalid-params', 'attachment offset must be a non-negative integer')
+    }
+    if (params.length !== undefined
+      && (!Number.isSafeInteger(params.length) || params.length <= 0 || params.length > MAX_ATTACHMENT_READ_BYTES)) {
+      throw sdkError('invalid-params', `attachment length must be an integer from 1 through ${MAX_ATTACHMENT_READ_BYTES}`)
+    }
     // Read requires an attached session: a stored log this runtime does not own
     // is outside this client's scope, even when the id is known.
     this.requireAttached(params.sessionId)
     const events = await this.sessionEvents(params.sessionId)
-    const ref = referencedImage(events, params.attachmentId)
-    if (ref === undefined) {
-      throw sdkError('attachment-invalid', 'this image is not referenced by the session', { attachmentId: params.attachmentId })
+    const imageRef = referencedImage(events, params.attachmentId)
+    const fileRef = imageRef === undefined ? referencedFile(events, params.attachmentId) : undefined
+    if (imageRef === undefined && fileRef === undefined) {
+      throw sdkError('attachment-invalid', 'this attachment is not referenced by the session', { attachmentId: params.attachmentId })
     }
     const attachments = this.ctx.get('attachments')
     if (attachments === undefined) throw sdkError('attachment-invalid', 'this deployment mounts no attachment store')
     try {
-      const stored = await attachments.readImage(ref)
-      return { attachment: stored.ref, data: Buffer.from(stored.data).toString('base64') }
+      let attachment: ImageAttachmentRef | FileAttachmentRef
+      let bytes: Uint8Array
+      let totalBytes: number
+      if (imageRef !== undefined) {
+        const stored = await attachments.readImage(imageRef)
+        attachment = stored.ref
+        totalBytes = stored.data.byteLength
+        if (offset > totalBytes) throw sdkError('invalid-params', 'attachment offset exceeds its byte length')
+        const length = params.length ?? totalBytes - offset
+        bytes = stored.data.subarray(offset, Math.min(totalBytes, offset + length))
+      } else {
+        attachment = fileRef as FileAttachmentRef
+        totalBytes = attachment.bytes
+        if (offset > totalBytes) throw sdkError('invalid-params', 'attachment offset exceeds its byte length')
+        const length = params.length ?? totalBytes - offset
+        bytes = offset === totalBytes
+          ? new Uint8Array()
+          : await attachments.readFileRange(attachment, offset, length)
+      }
+      const nextOffset = offset + bytes.byteLength < totalBytes ? offset + bytes.byteLength : null
+      return {
+        attachment,
+        data: Buffer.from(bytes).toString('base64'),
+        offset,
+        totalBytes,
+        nextOffset,
+      }
     } catch (error: unknown) {
       // Only a durable-reference failure blames the caller; a storage fault
       // stays an infrastructure error instead of masquerading as bad input.
+      if (error instanceof AttachmentError) throw sdkError('attachment-invalid', error.message)
+      throw error
+    }
+  }
+
+  /**
+   * Import one file from the session's execution world into the durable
+   * attachment store. The path is resolved below the session working
+   * directory after symlink resolution, so a client cannot cite arbitrary
+   * host files through the attachment surface.
+   * @param params - session, source path, and optional display name.
+   * @returns the durable verbatim file reference.
+   */
+  async importAttachment(params: SessionAttachmentImportParams): Promise<SessionAttachmentImportResult> {
+    if (!this.initialized) throw new Error('SDK server is not initialized')
+    if (params.path.trim().length === 0) {
+      throw sdkError('invalid-params', 'attachment import requires a non-empty path')
+    }
+    const rec = await this.getOrCreateSession(params.sessionId)
+    this.assertLiveAgent(rec, params.sessionId)
+    const agent = rec.handle.agent
+    const cwd = await this.ctx.workingDirectory.ensure(agent)
+    const realCwd = await realpath(cwd)
+    const source = resolve(cwd, params.path)
+    let realSource: string
+    try {
+      realSource = await realpath(source)
+    } catch (error: unknown) {
+      if (error instanceof Error && 'code' in error && error.code === 'ENOENT') {
+        throw sdkError('not-found', 'attachment import source does not exist', { path: params.path })
+      }
+      throw error
+    }
+    const relativePath = relative(realCwd, realSource)
+    if (relativePath.length === 0 || relativePath.startsWith('..') || isAbsolute(relativePath)) {
+      throw sdkError('invalid-params', 'attachment import path must stay inside the session working directory')
+    }
+    const info = await stat(realSource)
+    if (!info.isFile()) {
+      throw sdkError('invalid-params', 'attachment import path must name a regular file')
+    }
+    const attachments = this.ctx.get('attachments')
+    if (attachments === undefined) throw sdkError('attachment-invalid', 'this deployment mounts no attachment store')
+    try {
+      const attachment = await attachments.saveFileStream({
+        data: createReadStream(realSource),
+        name: params.name?.trim() || basename(source),
+      })
+      return { attachment }
+    } catch (error: unknown) {
       if (error instanceof AttachmentError) throw sdkError('attachment-invalid', error.message)
       throw error
     }
@@ -1184,7 +1276,35 @@ export class HarnessSdkJsonRpcServer {
         if (typeof attachmentId !== 'string' || attachmentId.length === 0) {
           throw new TypeError('session/attachment/read requires a non-empty attachmentId string')
         }
-        return this.readAttachment({ sessionId, attachmentId })
+        const offset = params?.offset
+        if (offset !== undefined && (typeof offset !== 'number' || !Number.isSafeInteger(offset) || offset < 0)) {
+          throw new TypeError('session/attachment/read offset must be a non-negative integer')
+        }
+        const length = params?.length
+        if (length !== undefined && (typeof length !== 'number' || !Number.isSafeInteger(length) || length <= 0)) {
+          throw new TypeError('session/attachment/read length must be a positive integer')
+        }
+        return this.readAttachment({
+          sessionId,
+          attachmentId,
+          ...(offset === undefined ? {} : { offset }),
+          ...(length === undefined ? {} : { length }),
+        })
+      }
+      case 'session/attachment/import': {
+        const sessionId = params?.sessionId
+        const path = params?.path
+        if (typeof sessionId !== 'string' || sessionId.length === 0) {
+          throw new TypeError('session/attachment/import requires a non-empty sessionId string')
+        }
+        if (typeof path !== 'string' || path.length === 0) {
+          throw new TypeError('session/attachment/import requires a non-empty path string')
+        }
+        const name = params?.name
+        if (name !== undefined && typeof name !== 'string') {
+          throw new TypeError('session/attachment/import name must be a string')
+        }
+        return this.importAttachment({ sessionId, path, ...(name === undefined ? {} : { name }) })
       }
       case 'session/model/select': {
         const sessionId = params?.sessionId

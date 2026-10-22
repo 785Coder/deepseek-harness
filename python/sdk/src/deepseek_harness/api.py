@@ -8,7 +8,7 @@ from typing import Callable
 
 from .client import HarnessClient, HarnessConfig
 from .errors import SdkProtocolError
-from .models import (InitializeCapabilities, InitializeResponse, IncomingRequest, JsonObject, Notification, SessionAttachmentResult, SessionHistoryResult,
+from .models import (InitializeCapabilities, InitializeResponse, IncomingRequest, JsonObject, Notification, SessionAttachmentImportResult, SessionAttachmentResult, SessionHistoryResult,
                      SessionListResult, SessionModelSelectionResult, SessionProjections, SessionSearchResult,
                      SessionSyncResult, SessionTitle)
 
@@ -222,9 +222,21 @@ class Session:
         """Edit, remove, or steer an input that is still pending."""
         self._ready_client().update_session_queue(self.id, item_id, action)
 
-    def read_attachment(self, attachment_id: str) -> SessionAttachmentResult:
-        """Read an image referenced by this session."""
-        return self._ready_client().read_session_attachment(self.id, attachment_id)
+    def read_attachment(
+        self,
+        attachment_id: str,
+        *,
+        offset: int | None = None,
+        length: int | None = None,
+    ) -> SessionAttachmentResult:
+        """Read a referenced file/image, optionally one bounded byte range."""
+        return self._ready_client().read_session_attachment(
+            self.id, attachment_id, offset=offset, length=length
+        )
+
+    def import_attachment(self, path: str, name: str | None = None) -> SessionAttachmentImportResult:
+        """Import one file below this session's working directory."""
+        return self._ready_client().import_session_attachment(self.id, path, name)
 
     def select_model(self, provider: str, model: str, *, reasoning_effort: str | None = None) -> SessionModelSelectionResult:
         """Persist a session-local model choice for subsequent steps and resumes."""
