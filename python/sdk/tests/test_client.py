@@ -1174,3 +1174,84 @@ def test_client_reports_missing_bundled_runtime_dependency(monkeypatch: pytest.M
 
     with pytest.raises(FileNotFoundError, match="Install deepseek-harness-runtime-bin"):
         HarnessClient(HarnessConfig(dsh_home="/explicit/home")).start()
+
+
+def test_reinitialize_conflict_keeps_the_runtime_usable(tmp_path: Path) -> None:
+    """A refused second handshake must not reap the runtime that already answered one."""
+    script = tmp_path / "conflict_runtime.py"
+    script.write_text(
+        """
+import json
+import sys
+
+initialized = False
+for line in sys.stdin:
+    msg = json.loads(line)
+    method = msg.get("method")
+    if method == "initialize":
+        if initialized:
+            print(json.dumps({
+                "jsonrpc": "2.0",
+                "id": msg["id"],
+                "error": {
+                    "code": -32020,
+                    "message": "SDK server is already initialized",
+                    "data": {"reason": "conflict"},
+                },
+            }), flush=True)
+        else:
+            initialized = True
+            print(json.dumps({
+                "jsonrpc": "2.0",
+                "id": msg["id"],
+                "result": {
+                    "serverInfo": {"name": "fake-dsh", "version": "0.0.1"},
+                    "capabilities": {"requests": ["initialize"], "notifications": []},
+                },
+            }), flush=True)
+    elif method == "session/create":
+        print(json.dumps({"jsonrpc": "2.0", "id": msg["id"], "result": {"sessionId": "kept"}}), flush=True)
+    elif method == "shutdown":
+        print(json.dumps({"jsonrpc": "2.0", "id": msg["id"], "result": {}}), flush=True)
+""".strip()
+    )
+
+    client = HarnessClient(HarnessConfig(dsh_home=str(tmp_path)), _launch_args=(sys.executable, str(script)))
+    try:
+        client.start()
+        client.initialize(provider="deepseek-official", cwd=str(tmp_path), model="deepseek-v4-pro")
+        with pytest.raises(JsonRpcError) as raised:
+            client.initialize(provider="deepseek-official", cwd=str(tmp_path), model="deepseek-v4-pro")
+        assert raised.value.reason == "conflict"
+        assert client._proc is not None and client._proc.poll() is None
+        assert client.create_session("kept").sessionId == "kept"
+    finally:
+        client.close()
+
+
+def test_failed_first_handshake_still_reaps_the_runtime(tmp_path: Path) -> None:
+    """The first handshake stays fatal: a runtime that cannot initialize is unusable."""
+    script = tmp_path / "broken_runtime.py"
+    script.write_text(
+        """
+import json
+import sys
+import time
+
+for line in sys.stdin:
+    msg = json.loads(line)
+    if msg.get("method") == "initialize":
+        print(json.dumps({
+            "jsonrpc": "2.0",
+            "id": msg["id"],
+            "error": {"code": -32020, "message": "boom", "data": {"reason": "internal"}},
+        }), flush=True)
+        time.sleep(60)
+""".strip()
+    )
+
+    client = HarnessClient(HarnessConfig(dsh_home=str(tmp_path)), _launch_args=(sys.executable, str(script)))
+    client.start()
+    with pytest.raises(JsonRpcError):
+        client.initialize(provider="deepseek-official", cwd=str(tmp_path), model="deepseek-v4-pro")
+    assert client._proc is None

@@ -1,4 +1,4 @@
-import type { Agent } from '@deepseek-ai/dsh-agent'
+import type { Agent, AgentSetup, AgentSetupCommit } from '@deepseek-ai/dsh-agent'
 import type { Context } from '@deepseek-ai/cordis'
 import { ToolCallId } from '@deepseek-ai/dsh-llm'
 import { SessionId } from '@deepseek-ai/dsh-session'
@@ -34,12 +34,19 @@ interface FakeContext {
 
 /**
  * Hand-built context matching every `ctx.on` / `ctx.get` / `ctx.agents`
- * access the server makes. `agents.create` serves the pre-registered live
- * agents map; `agents.get` mirrors the same map so `prompt`'s liveness check
- * passes. `approvalMounted=false` makes `ctx.get('approval')` return undefined
+ * access the server makes. `agents.create` mirrors the real factory contract:
+ * the creation transaction awaits `setup` and invokes its publication commit,
+ * which is where this server binds ownership. `agents.get` mirrors the same
+ * map so `prompt`'s liveness check passes, and `isOwnedBy` answers from
+ * `parents`, the runtime parent relation that alone grants child inheritance.
+ * `approvalMounted=false` makes `ctx.get('approval')` return undefined
  * (the seam is not composed).
  */
-function makeFakeContext(agents: ReadonlyMap<string, Agent>, approvalMounted: boolean): FakeContext {
+function makeFakeContext(
+  agents: ReadonlyMap<string, Agent>,
+  approvalMounted: boolean,
+  parents: ReadonlyMap<string, Agent> = new Map(),
+): FakeContext {
   const handlers = new Map<string, (...args: never[]) => unknown>()
   const disposers: ReturnType<typeof vi.fn>[] = []
   const on = vi.fn((name: string, handler: (...args: never[]) => unknown) => {
@@ -48,16 +55,20 @@ function makeFakeContext(agents: ReadonlyMap<string, Agent>, approvalMounted: bo
     disposers.push(disposer)
     return disposer
   })
+  const agentsApi = {
+    create: vi.fn(async (options: { sessionId: SessionId; setup?: AgentSetup }) => {
+      const agent = agents.get(String(options.sessionId))
+      if (agent === undefined) throw new Error(`no fake agent registered for session ${String(options.sessionId)}`)
+      const commit = (await options.setup?.(ctx, agent)) as AgentSetupCommit | undefined
+      commit?.commit()
+      return { agent, dispose: vi.fn(() => Promise.resolve()) }
+    }),
+    get: (id: SessionId) => agents.get(String(id)),
+    isOwnedBy: (id: SessionId, owner: Agent) => parents.get(String(id)) === owner,
+  }
   const ctx = {
     on,
-    agents: {
-      create: vi.fn(async (options: { sessionId: SessionId }) => {
-        const agent = agents.get(String(options.sessionId))
-        if (agent === undefined) throw new Error(`no fake agent registered for session ${String(options.sessionId)}`)
-        return { agent, dispose: vi.fn(() => Promise.resolve()) }
-      }),
-      get: (id: SessionId) => agents.get(String(id)),
-    },
+    agents: agentsApi,
     get: (name: string) => {
       if (name === 'approval') return approvalMounted ? {} : undefined
       if (name === 'llm') {
@@ -73,7 +84,7 @@ function makeAgent(id: string): Agent {
   const sessionId = SessionId(id)
   return {
     id: sessionId,
-    session: { id: sessionId },
+    session: { id: sessionId, header: { id: sessionId } },
     followup: vi.fn<Agent['followup']>(),
   } as unknown as Agent
 }
@@ -100,6 +111,13 @@ function createdHandlerOf(fake: FakeContext): (session: CreatedSession) => void 
   return handler as unknown as (session: CreatedSession) => void
 }
 
+/** Drive the runtime child announcement that derives child ownership. */
+function agentCreatedHandlerOf(fake: FakeContext): (payload: { agent: Agent }) => void {
+  const handler = fake.handlers.get('agent/created')
+  if (handler === undefined) throw new Error('agent/created handler was not registered')
+  return handler as unknown as (payload: { agent: Agent }) => void
+}
+
 const fallbackNext = (): Promise<ApprovalOutcome> => Promise.resolve('unavailable')
 
 /** Initialize the handshake so `prompt` passes the server's readiness guard. */
@@ -113,7 +131,7 @@ describe('HarnessSdkJsonRpcServer approval relay', () => {
     const fake = makeFakeContext(new Map([['main', agent]]), true)
     const transport = new RecordingTransport()
     const server = new HarnessSdkJsonRpcServer(fake.ctx, transport)
-    // createSession 经 prompt 把 'main' 计入 ownedSessionIds。
+    // prompt 走创建事务，setup 的 commit 在此绑定 'main' 的 Agent。
     await initializeServer(server)
     await server.prompt({ sessionId: 'main', contentBlocks: [{ type: 'text', text: 'hello' }] })
 
@@ -171,7 +189,7 @@ describe('HarnessSdkJsonRpcServer approval relay', () => {
     const fake = makeFakeContext(new Map(), true)
     const transport = new RecordingTransport()
     const server = new HarnessSdkJsonRpcServer(fake.ctx, transport)
-    // 'ghost' 从未 prompt，不在 ownedSessionIds 内。
+    // 'ghost' 从未创建，未被绑定。
 
     const next = vi.fn<() => Promise<ApprovalOutcome>>(fallbackNext)
     const outcome = await approvalHandlerOf(fake)({ agent: ghost, toolName: 'bash' }, next)
@@ -183,17 +201,19 @@ describe('HarnessSdkJsonRpcServer approval relay', () => {
     await server.shutdown()
   })
 
-  it('relays for a child session whose parent session is owned', async () => {
+  it('relays for a runtime child whose parent agent is owned', async () => {
     const main = makeAgent('main')
     const child = makeAgent('child')
-    const fake = makeFakeContext(new Map([['main', main], ['child', child]]), true)
+    const fake = makeFakeContext(
+      new Map([['main', main], ['child', child]]), true, new Map([['child', main]]),
+    )
     const transport = new RecordingTransport()
     const server = new HarnessSdkJsonRpcServer(fake.ctx, transport)
     await initializeServer(server)
     await server.prompt({ sessionId: 'main', contentBlocks: [{ type: 'text', text: 'hello' }] })
 
-    // 驱动 session/created：父 session 已归属 → 子 session 继承归属。
-    createdHandlerOf(fake)({ id: SessionId('child'), header: { parentSession: SessionId('main') } })
+    // 驱动 agent/created：子 Agent 的运行时父对象是已绑定的 main → 继承归属。
+    agentCreatedHandlerOf(fake)({ agent: child })
 
     const outcome = await approvalHandlerOf(fake)({ agent: child, toolName: 'bash' }, vi.fn(fallbackNext))
 
@@ -204,7 +224,7 @@ describe('HarnessSdkJsonRpcServer approval relay', () => {
     await server.shutdown()
   })
 
-  it('does not inherit ownership when the parent session is not owned', async () => {
+  it('does not inherit ownership from a persisted parent session alone', async () => {
     const main = makeAgent('main')
     const orphanChild = makeAgent('orphan-child')
     const fake = makeFakeContext(new Map([['main', main], ['orphan-child', orphanChild]]), true)
@@ -212,8 +232,9 @@ describe('HarnessSdkJsonRpcServer approval relay', () => {
     const server = new HarnessSdkJsonRpcServer(fake.ctx, transport)
     await initializeServer(server)
     await server.prompt({ sessionId: 'main', contentBlocks: [{ type: 'text', text: 'hello' }] })
-    // 父 session 'ghost' 不是归属的 → 子 session 不继承。
-    createdHandlerOf(fake)({ id: SessionId('orphan-child'), header: { parentSession: SessionId('ghost') } })
+    // 只有持久化 parentSession='main'，没有运行时父对象 → 不继承归属。
+    createdHandlerOf(fake)({ id: SessionId('orphan-child'), header: { parentSession: SessionId('main') } })
+    agentCreatedHandlerOf(fake)({ agent: orphanChild })
 
     const next = vi.fn<() => Promise<ApprovalOutcome>>(fallbackNext)
     const outcome = await approvalHandlerOf(fake)({ agent: orphanChild, toolName: 'bash' }, next)

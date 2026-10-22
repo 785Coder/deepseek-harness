@@ -8,7 +8,9 @@ from typing import Callable
 
 from .client import HarnessClient, HarnessConfig
 from .errors import SdkProtocolError
-from .models import IncomingRequest, JsonObject, Notification
+from .models import (IncomingRequest, JsonObject, Notification, SessionAttachmentResult, SessionHistoryResult,
+                     SessionListResult, SessionModelSelectionResult, SessionProjections, SessionSearchResult,
+                     SessionSyncResult, SessionTitle)
 
 # 仅 on_request 启用时轮询请求队列的时间片：会话循环阻塞在等待通知的空闲期，
 # 也要周期醒来清空运行时发来的 session/question 请求，否则代理停在等待答案时
@@ -29,6 +31,7 @@ class DeepSeekHarnessConfig:
     model: str = "deepseek-v4-flash"
     reasoning_effort: str | None = None
     max_tokens: int | None = None
+    session_ids: tuple[str, ...] | None = None
     cwd: str | None = None
     runtime_cwd: str | None = None
     dsh_bin: str | None = None
@@ -116,6 +119,7 @@ class DeepSeekHarness:
             model=self.config.model,
             reasoning_effort=self.config.reasoning_effort,
             max_tokens=self.config.max_tokens,
+            **({} if self.config.session_ids is None else {"session_ids": self.config.session_ids}),
         )
         self._initialized = True
 
@@ -136,6 +140,21 @@ class DeepSeekHarness:
         self._client.resume_session(session_id)
         return Session(self, session_id)
 
+    def create_session(self, session_id: str | None = None) -> "Session":
+        """Create an attached session without submitting model input."""
+        self.start()
+        return Session(self, self.client.create_session(session_id).sessionId)
+
+    def list_sessions(self, *, limit: int | None = None) -> SessionListResult:
+        """List the sessions visible to this initialized runtime."""
+        self.start()
+        return self.client.list_sessions(limit=limit)
+
+    def search_sessions(self, query: str, *, limit: int | None = None, cursor: str | None = None) -> SessionSearchResult:
+        """Search authorized session messages."""
+        self.start()
+        return self.client.search_sessions(query, limit=limit, cursor=cursor)
+
     def run(
         self,
         input: str | list[JsonObject],
@@ -153,6 +172,60 @@ class Session:
     def __init__(self, harness: DeepSeekHarness, session_id: str) -> None:
         self.harness = harness
         self.id = session_id
+
+    def _ready_client(self) -> HarnessClient:
+        self.harness.start()
+        return self.harness.client
+
+    def cancel(self) -> None:
+        """Cancel the active turn while retaining queued input."""
+        self._ready_client().cancel_session(self.id)
+
+    def dispose(self) -> None:
+        """Release this live session without shutting down the runtime."""
+        self._ready_client().dispose_session(self.id)
+
+    def rename(self, title: str) -> SessionTitle:
+        """Accept a normalized, user-owned durable title."""
+        return self._ready_client().rename_session(self.id, title)
+
+    def command(self, line: str) -> bool:
+        """Execute a slash command and return whether it matched."""
+        return self._ready_client().run_session_command(self.id, line)
+
+    def history(self, *, from_seq: int | None = None, limit: int | None = None,
+                align: str | None = None, before_seq: int | None = None) -> SessionHistoryResult:
+        """Read forwards by sequence or backwards by message with cited sources."""
+        return self._ready_client().session_history(self.id, from_seq=from_seq, limit=limit, align=align, before_seq=before_seq)
+
+    def sync(self, *, from_seq: int | None = None, limit: int | None = None) -> SessionSyncResult:
+        """Read one consistent observation and its next sequence."""
+        return self._ready_client().sync_session(self.id, from_seq=from_seq, limit=limit)
+
+    def projections(self) -> SessionProjections:
+        """Read registered client-visible projection values."""
+        return self._ready_client().session_projections(self.id)
+
+    def update_queue(self, item_id: str, action: JsonObject) -> None:
+        """Edit, remove, or steer an input that is still pending."""
+        self._ready_client().update_session_queue(self.id, item_id, action)
+
+    def read_attachment(self, attachment_id: str) -> SessionAttachmentResult:
+        """Read an image referenced by this session."""
+        return self._ready_client().read_session_attachment(self.id, attachment_id)
+
+    def select_model(self, provider: str, model: str, *, reasoning_effort: str | None = None) -> SessionModelSelectionResult:
+        """Persist a session-local model choice for subsequent steps and resumes."""
+        return self._ready_client().select_session_model(self.id, provider, model, reasoning_effort=reasoning_effort)
+
+    def answer_question(self, call_id: str, answer: JsonObject) -> bool:
+        """Admit an explicit answer to a continued timed question."""
+        return self._ready_client().answer_question(self.id, call_id, answer)
+
+    def fork(self, *, at_seq: int | None = None) -> "Session":
+        """Create an attached session from a completed-turn or exact prefix."""
+        result = self._ready_client().fork_session(self.id, at_seq=at_seq)
+        return Session(self.harness, result.sessionId)
 
     def get_working_directory(self) -> str:
         """Read the effective directory, recovering a missing directory to the Session origin."""

@@ -60,7 +60,7 @@ describe('SDK persisted session resume', () => {
     await first.ctx.fiber.dispose()
 
     const second: Awaited<ReturnType<typeof initialized>> = await initialized(root)
-    const request: ReturnType<typeof vi.spyOn> = vi.spyOn(second.transport, 'request').mockImplementation(async (method) => {
+    const request = vi.spyOn(second.transport, 'request').mockImplementation(async (method) => {
       if (method === 'session/question') return { answers: [{ id: 'confirm', selected: [], custom: 'yes' }] }
       if (method === 'session/approval') return 'allowed-once'
       throw new Error(`unexpected server request: ${method}`)
@@ -91,7 +91,7 @@ describe('SDK persisted session resume', () => {
     await first.ctx.fiber.dispose()
 
     const second = await runtime(root)
-    await second.server.initialize({ cwd: tmpdir(), provider: 'mock', model: 'resumed-model', maxTokens: 123 })
+    await second.server.initialize({ cwd: tmpdir(), provider: 'mock', model: 'resumed-model', maxTokens: 123, sessionIds: ['saved-session'] })
     await expect(second.server.handleRequest('session/resume', { sessionId: 'saved-session' }))
       .resolves.toEqual({})
     const restored = second.ctx.agents.get(SessionId('saved-session'))!.session

@@ -8,6 +8,7 @@
     "src"
   ],
   "references": [
+    { "path": "../../api/session-controller/tsconfig.host.json" },
     { "path": "../../api/job-controller/tsconfig.host.json" },
     { "path": "../../jobs/jobs" },
     {

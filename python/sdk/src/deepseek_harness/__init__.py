@@ -5,7 +5,8 @@ from .jobs import (JobView, JobChunk, JobOutputRead, JobRowsSubscription, JobOut
                    JobSubscriptionError, JobAccessError, JobNotFoundError, JobCursorError,
                    JobServiceUnavailableError, JobRemovedError)
 from .errors import SdkProtocolError
-from .models import IncomingRequest, InitializeResponse, JsonObject, Notification, ServerInfo
+from .models import (IncomingRequest, InitializeCapabilities, InitializeResponse, JsonObject,
+                     Notification, ServerInfo)
 
 __all__ = [
     "JobView", "JobChunk", "JobOutputRead", "JobRowsSubscription", "JobOutputSubscription",
@@ -20,6 +21,7 @@ __all__ = [
     "HarnessConfig",
     "SdkProtocolError",
     "IncomingRequest",
+    "InitializeCapabilities",
     "InitializeResponse",
     "JsonObject",
     "Notification",

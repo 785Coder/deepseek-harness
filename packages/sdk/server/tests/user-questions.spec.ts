@@ -1,5 +1,6 @@
-import type { Agent } from '@deepseek-ai/dsh-agent'
+import type { Agent, AgentSetup, AgentSetupCommit } from '@deepseek-ai/dsh-agent'
 import type { Context } from '@deepseek-ai/cordis'
+import { ToolCallId } from '@deepseek-ai/dsh-llm'
 import { SessionId } from '@deepseek-ai/dsh-session'
 import type { JsonRpcTransportPeer } from '@deepseek-ai/dsh-sdk-protocol'
 import type { AskUserQuestionAnswer, AskUserQuestionRequest } from '@deepseek-ai/dsh-user-questions'
@@ -28,10 +29,11 @@ interface FakeContext {
 
 /**
  * Hand-built context matching every `ctx.on` / `ctx.get` / `ctx.agents`
- * access the server makes. `agents.create` / `agents.get` serve the
- * pre-registered live agents map; the 'llm' key provides the adapter route
- * `initialize` resolves. Ownership comes from `prompt`, which registers the
- * session in `ownedSessionIds`.
+ * access the server makes. `agents.create` mirrors the real factory contract:
+ * the creation transaction awaits `setup` and invokes its publication commit,
+ * which is where this server binds ownership. `agents.get` serves the same
+ * pre-registered map; the 'llm' key provides the adapter route `initialize`
+ * resolves.
  */
 function makeFakeContext(agents: ReadonlyMap<string, Agent>): FakeContext {
   const handlers = new Map<string, (...args: never[]) => unknown>()
@@ -39,16 +41,19 @@ function makeFakeContext(agents: ReadonlyMap<string, Agent>): FakeContext {
     handlers.set(name, handler)
     return vi.fn(() => undefined)
   })
+  const agentsApi = {
+    create: vi.fn(async (options: { sessionId: SessionId; setup?: AgentSetup }) => {
+      const agent = agents.get(String(options.sessionId))
+      if (agent === undefined) throw new Error(`no fake agent registered for session ${String(options.sessionId)}`)
+      const commit = (await options.setup?.(ctx, agent)) as AgentSetupCommit | undefined
+      commit?.commit()
+      return { agent, dispose: vi.fn(() => Promise.resolve()) }
+    }),
+    get: (id: SessionId) => agents.get(String(id)),
+  }
   const ctx = {
     on,
-    agents: {
-      create: vi.fn(async (options: { sessionId: SessionId }) => {
-        const agent = agents.get(String(options.sessionId))
-        if (agent === undefined) throw new Error(`no fake agent registered for session ${String(options.sessionId)}`)
-        return { agent, dispose: vi.fn(() => Promise.resolve()) }
-      }),
-      get: (id: SessionId) => agents.get(String(id)),
-    },
+    agents: agentsApi,
     get: (name: string) => {
       // Simulate the optional question service activating after the server.
       if (name === 'userQuestions') return undefined
@@ -91,7 +96,7 @@ describe('HarnessSdkJsonRpcServer user-questions relay', () => {
     const transport = new RecordingTransport()
     const server = new HarnessSdkJsonRpcServer(fake.ctx, transport)
     await initializeServer(server)
-    // createSession 经 prompt 把 'main' 计入 ownedSessionIds。
+    // prompt 走创建事务，setup 的 commit 在此绑定 'main' 的 Agent。
     await server.prompt({ sessionId: 'main', contentBlocks: [{ type: 'text', text: 'hello' }] })
 
     const handler = questionHandlerOf(fake)
@@ -116,12 +121,37 @@ describe('HarnessSdkJsonRpcServer user-questions relay', () => {
     await server.shutdown()
   })
 
+  it('forwards the asking tool call id to the wire when the request carries one', async () => {
+    const agent = makeAgent('main')
+    const fake = makeFakeContext(new Map([['main', agent]]))
+    const transport = new RecordingTransport()
+    const server = new HarnessSdkJsonRpcServer(fake.ctx, transport)
+    await initializeServer(server)
+    await server.prompt({ sessionId: 'main', contentBlocks: [{ type: 'text', text: 'hello' }] })
+
+    const request: AskUserQuestionRequest = {
+      questions: [{ id: 'q1', question: 'Continue?' }],
+      agent,
+      callId: ToolCallId('call-1'),
+    }
+    await questionHandlerOf(fake)(request, vi.fn<() => Promise<AskUserQuestionAnswer>>())
+
+    // 关联字段只做原值透传：客户端无需按事件顺序猜测工具调用。
+    expect(transport.requests[0]?.params).toEqual({
+      sessionId: 'main',
+      questions: request.questions,
+      callId: 'call-1',
+    })
+
+    await server.shutdown()
+  })
+
   it('delegates via next() for a session the server does not own', async () => {
     const ghost = makeAgent('ghost')
     const fake = makeFakeContext(new Map())
     const transport = new RecordingTransport()
     const server = new HarnessSdkJsonRpcServer(fake.ctx, transport)
-    // 'ghost' 从未 prompt，不在 ownedSessionIds 内。
+    // 'ghost' 从未创建，未被绑定。
     const next = vi.fn<() => Promise<AskUserQuestionAnswer>>()
     const answer = await questionHandlerOf(fake)({
       questions: [{ id: 'q1', question: 'Continue?' }],

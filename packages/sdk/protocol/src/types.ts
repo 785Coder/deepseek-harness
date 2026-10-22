@@ -8,16 +8,61 @@
  * @module @deepseek-ai/dsh-sdk-protocol/types
  */
 
+import type { ImageAttachmentRef } from '@deepseek-ai/dsh-attachment'
 import type { ContentBlock, ReasoningEffortId, ToolCallId } from '@deepseek-ai/dsh-llm'
+import type { AssistantStreamFrame } from '@deepseek-ai/dsh-agent'
 import type { SessionEvent } from '@deepseek-ai/dsh-session'
 import type { SubagentStopReason } from '@deepseek-ai/dsh-subagent'
 import type { ApprovalOutcome } from '@deepseek-ai/dsh-user-approval/types'
 import type { AskUserQuestionAnswer, AskUserQuestionItem } from '@deepseek-ai/dsh-user-questions/types'
 
+/**
+ * Stable reason token for one control-plane failure, carried as
+ * `error.data.reason` on a JSON-RPC error response. The names mirror the Web
+ * control plane's classification so a client can branch without parsing text.
+ */
+export type SdkErrorReason =
+  | 'not-found'
+  | 'not-attached'
+  | 'session-not-owned'
+  | 'writer-held'
+  | 'conflict'
+  | 'invalid-params'
+  | 'method-not-found'
+  | 'agent-busy'
+  | 'queue-item-not-found'
+  | 'queue-edit-non-text'
+  | 'queue-edit-empty'
+  | 'steer-unavailable'
+  | 'title-invalid'
+  | 'title-unavailable'
+  | 'attachment-invalid'
+  | 'model-unavailable'
+  | 'answer-unavailable'
+  | 'answer-invalid'
+  | 'reply-queued'
+  | 'command-unavailable'
+  | 'search-unavailable'
+  | 'list-unavailable'
+  | 'history-unavailable'
+  | 'fork-unavailable'
+  | 'projections-unavailable'
+  | 'internal'
+
+/** Structured payload of one SDK control-plane error response. */
+export interface SdkErrorData {
+  /** Stable classification of the failure. */
+  reason: SdkErrorReason
+  /** Human-readable detail, safe to log and show. */
+  [field: string]: unknown
+}
+
 /** Parameters for the process-wide SDK handshake. */
 export interface InitializeParams {
   /** Working directory recorded on every SDK-created session's header. */
   cwd: string
+  /** Trusted host allowlist for this runtime; omitted scopes stored sessions to cwd. */
+  sessionIds?: string[]
   /** Provider route every SDK-created agent runs on. */
   provider: string
   /** Model name every SDK-created agent runs on (the server may mount a fallback adapter; see `HarnessSdkJsonRpcServer.initialize`). */
@@ -32,6 +77,16 @@ export interface InitializeParams {
 export interface InitializeResult {
   /** Wire-stable server identity (`deepseek-harness-sdk-runtime`) and version. */
   serverInfo: { name: string; version: string }
+  /**
+   * What this build serves, so a client can gate features instead of probing.
+   * Both lists are additive: a missing entry means the method is unsupported.
+   */
+  capabilities: {
+    /** Request method names (the same strings `HarnessSdkRequestMap` keys). */
+    requests: string[]
+    /** Server-to-client notification method names. */
+    notifications: string[]
+  }
 }
 
 /** One user turn on one SDK session. */
@@ -99,6 +154,322 @@ export interface SessionEventNotification {
   sessionId: string
   /** The full session-log event envelope. */
   event: SessionEvent
+}
+
+/** One queue mutation: edit text, drop the item, or steer it into the running turn. */
+export type SessionQueueAction =
+  | { kind: 'edit'; content: SdkPromptContentBlock[] }
+  | { kind: 'remove' }
+  | { kind: 'steer' }
+
+/** Parameters for mutating one still-pending queue item. */
+export interface SessionQueueUpdateParams {
+  /** SDK-owned session holding the queued item. */
+  sessionId: string
+  /** Pending message identity from the prompt result or `agent/inbox/spliced`. */
+  itemId: string
+  /** Requested mutation. */
+  action: SessionQueueAction
+}
+
+/** Acknowledgement that a queue mutation was applied. */
+export interface SessionQueueUpdateResult { accepted: true }
+
+/** Parameters for reading one attached session's log page by sequence. */
+export interface SessionHistoryParams {
+  /** SDK-owned session whose committed events are read. */
+  sessionId: string
+  /** Inclusive first sequence; omitted starts at `0`. */
+  fromSeq?: number
+  /** Maximum events to return (1..1000, default 100). */
+  limit?: number
+  /** Exclusive backwards cursor for message-aligned pages; omitted starts at the tail. */
+  beforeSeq?: number
+  /**
+   * `seq` pages forwards by event count using fromSeq. `message` pages backwards
+   * by append-message count using beforeSeq, including every cited source.
+   */
+  align?: 'seq' | 'message'
+}
+
+/** One chronological history page over committed events. */
+export interface SessionHistoryResult {
+  /** Events in sequence order, starting at or after `fromSeq`. */
+  events: SessionEvent[]
+  /** Inclusive cursor for the next page, or `null` when this page reached the tail. */
+  nextCursor: number | null
+  /** Whether more committed events follow this page. */
+  hasMore: boolean
+}
+
+/** Parameters for cancelling the active turn of one attached session. */
+export interface SessionCancelParams {
+  /** SDK-owned session whose current turn is cancelled. */
+  sessionId: string
+}
+
+/** Parameters for releasing one attached session while keeping the runtime. */
+export interface SessionDisposeParams {
+  /** SDK-owned session to dispose; a later prompt may create it again. */
+  sessionId: string
+}
+
+/** Parameters for executing one slash-command line against a session. */
+export interface SessionCommandParams {
+  /** SDK-owned session whose agent receives the command. */
+  sessionId: string
+  /** Complete command line, leading slash included. */
+  line: string
+}
+
+/** Admission outcome of one slash-command line. */
+export interface SessionCommandResult {
+  /**
+   * Whether a registered command matched the line. A miss (bad syntax or an
+   * unknown name) logs nothing and runs nothing; a match logs its own
+   * `command/run`/`command/done` pair into the session log.
+   */
+  matched: boolean
+}
+
+/** Parameters for renaming one session. */
+export interface SessionRenameParams {
+  /** SDK-owned session to retitle. */
+  sessionId: string
+  /** Proposed title; normalized before acceptance. */
+  title: string
+}
+
+/** Accepted title and the sequence of its durable `session/title` event. */
+export interface SessionRenameResult {
+  /** Normalized title actually recorded. */
+  title: string
+  /** Sequence of the `session/title` event that pinned it. */
+  seq: number
+}
+
+/** Parameters for reading one image attachment a session references. */
+export interface SessionAttachmentParams {
+  /** Session that must already reference the attachment. */
+  sessionId: string
+  /** Attachment identity taken from an image block in this session's log. */
+  attachmentId: string
+}
+
+/** One durable image reference and its bytes. */
+export interface SessionAttachmentResult {
+  /** Durable normalized reference the store resolves. */
+  attachment: ImageAttachmentRef
+  /** Base64-encoded image payload. */
+  data: string
+}
+
+/** Parameters for selecting the model one session uses from its next step on. */
+export interface SessionModelSelectParams {
+  /** SDK-owned session whose route changes. */
+  sessionId: string
+  /** Registered provider route. */
+  provider: string
+  /** Provider-owned model id. */
+  model: string
+  /** Adapter-owned reasoning effort; omitted restores the model's own default. */
+  reasoningEffort?: string
+}
+
+/** Normalized route accepted for the session. */
+export interface SessionModelSelectResult {
+  selected: { provider: string; model: string; reasoningEffort?: string }
+}
+
+/** Parameters for aligning a reconnecting client with one session. */
+export interface SessionSyncParams {
+  /** Session to align with. */
+  sessionId: string
+  /** Inclusive first sequence the client still needs; omitted starts at `0`. */
+  fromSeq?: number
+  /** Maximum events in the returned tail page (1..1000, default 100). */
+  limit?: number
+}
+
+/** Authoritative cut plus the log tail a reconnecting client missed. */
+export interface SessionSyncResult {
+  /**
+   * Sequence the next committed event will use. Resume `fromSeq` here only when
+   * `history.hasMore` is false; otherwise continue from `history.nextCursor`.
+   */
+  nextSeq: number
+  /** Committed events at or after `fromSeq`, in the `session/history` shape. */
+  history: SessionHistoryResult
+  /** Projection baseline when the deployment mounts projections. */
+  projections?: SessionProjectionsResult
+}
+
+/** Client panel claim on the upstream foreground question wait. */
+export interface SessionQuestionWaitParams {
+  sessionId: string
+  callId: string
+  action: 'attach' | 'release'
+}
+
+/** Host countdown; null means the question has no foreground wait. */
+export interface SessionQuestionWaitResult { remainingMs: number | null }
+
+/** Foreground request settlement, independent from any later answer. */
+export interface SessionQuestionStateNotification {
+  sessionId: string
+  callId: string
+  state: 'answered' | 'continued' | 'closed'
+}
+
+/** Parameters for answering one question whose foreground wait already ended. */
+export interface SessionAnswerParams {
+  /** SDK-owned session that owns the question. */
+  sessionId: string
+  /** Question identity the answer belongs to. */
+  callId: string
+  /** Complete structured answer batch, one item per question of the call. */
+  answer: AskUserQuestionAnswer
+}
+
+/** Whether the question was still continued and accepted the reply. */
+export interface SessionAnswerResult {
+  /** Current durable question state; an open question may become continued after timeout. */
+  state?: 'open' | 'continued' | 'settled'
+  /**
+   * True when the reply was queued for the session's next turn. False when the
+   * question is no longer continued, i.e. there is nothing left to answer.
+   */
+  accepted: boolean
+}
+
+/** Parameters for listing stored sessions. */
+export interface SessionListParams {
+  /** Maximum rows to return (1..500, default 50), newest first. */
+  limit?: number
+}
+
+/** One listed session row. */
+export interface SessionListItem {
+  /** Session identity. */
+  sessionId: string
+  /** Unix epoch milliseconds from the stored header. */
+  createdAt: number
+  /** Latest human prompt time, or `createdAt` when the log has none yet. */
+  updatedAt: number
+  /** Whether the folded prefix contains no turn. */
+  blank: boolean
+  /** Directory the session was created in, when recorded. */
+  cwd?: string
+  /** Session this one was forked from, when recorded. */
+  parentSession?: string
+  /** Latest log-backed title, when the log has one. */
+  title?: string
+  /** Whether the runtime currently holds a live Agent for it. */
+  live: boolean
+}
+
+/** Listed sessions, newest first. */
+export interface SessionListResult {
+  sessions: SessionListItem[]
+}
+
+/** Parameters for searching stored sessions. */
+export interface SessionSearchParams {
+  /** Query text, interpreted as data and never as executable syntax. */
+  query: string
+  /** Maximum hits in this page (provider default when omitted). */
+  limit?: number
+  /** Opaque continuation cursor from a previous page of the identical query. */
+  cursor?: string
+}
+
+/** One session-level search hit. */
+export interface SessionSearchItem {
+  /** Session holding the best matching message. */
+  sessionId: string
+  /** Matching message excerpt. */
+  snippet: string
+}
+
+/** One page of session search hits. */
+export interface SessionSearchResult {
+  items: SessionSearchItem[]
+  /** Opaque cursor for the next page, absent at the end of the result set. */
+  nextCursor?: string
+}
+
+/** Parameters for creating (or adopting) one session identity. */
+export interface SessionCreateParams {
+  /** Explicit identity to create or adopt; omitted mints one. */
+  sessionId?: string
+}
+
+/** Identity of the created or adopted session. */
+export interface SessionCreateResult {
+  sessionId: string
+}
+
+/** Parameters for forking a session from an exact event prefix. */
+export interface SessionForkParams {
+  /** Source session whose committed events seed the child. */
+  sessionId: string
+  /** Inclusive cut; omitted uses the latest completed turn. */
+  atSeq?: number
+}
+
+/** Identity of the forked session. */
+export interface SessionForkResult {
+  sessionId: string
+}
+
+/** `session.created` payload: a session was created (or attached) in this runtime. */
+export interface SessionCreatedNotification {
+  /** The new session. */
+  sessionId: string
+}
+
+/** `session.disposed` payload: a session left this runtime. */
+export interface SessionDisposedNotification {
+  /** The released session. */
+  sessionId: string
+}
+
+/** Parameters for reading one session's projection baseline. */
+export interface SessionProjectionsParams {
+  /** Session whose client-visible projections are read. */
+  sessionId: string
+}
+
+/** One consistent projection cut: every value reflects the same log position. */
+export interface SessionProjectionsResult {
+  /** Seq of the last event the values reflect (`-1` for an empty log). */
+  asOfSeq: number
+  /** Client-visible unit values keyed by projection name. */
+  values: Readonly<Record<string, unknown>>
+}
+
+/** `session.projection-frame` payload: one unit's changed client view. */
+export interface SessionProjectionFrameNotification {
+  /** Session the projection belongs to. */
+  sessionId: string
+  /** Registered projection key, e.g. `usage` or `todo`. */
+  projection: string
+  /** Seq of the event that caused the change. */
+  asOfSeq: number
+  /** Schema-validated client view. */
+  value: unknown
+}
+
+/** `session.assistant-stream` payload: one transient model-output frame. */
+export interface SessionAssistantStreamNotification {
+  /** Session whose attempt produced the frame. */
+  sessionId: string
+  /**
+   * Native frame forwarded unchanged: `start`/`chunk`/`end` carrying attempt,
+   * revision, and index. Frames are transient and never persisted; the durable
+   * `assistant/attempt` and `assistant/message` events remain the final fact.
+   */
+  frame: AssistantStreamFrame
 }
 
 /** Whole-agent lifecycle state for one session. */
@@ -193,8 +564,13 @@ export interface SdkJobClosedNotification {
 export interface HarnessSdkNotificationMap {
   'job.frame': SdkJobFrameNotification
   'job.closed': SdkJobClosedNotification
+  'session.assistant-stream': SessionAssistantStreamNotification
+  'session.created': SessionCreatedNotification
+  'session.disposed': SessionDisposedNotification
+  'session.projection-frame': SessionProjectionFrameNotification
   'session.event': SessionEventNotification
   'session.status': SessionStatusNotification
+  'session.question-state': SessionQuestionStateNotification
   'subagent.started': SubagentStartedNotification
   'subagent.finished': SubagentFinishedNotification
 }
@@ -208,6 +584,22 @@ export interface HarnessSdkRequestMap {
   'job/unsubscribe': { params: { subscriptionId: string }; result: Record<string, never> }
   'initialize': { params: InitializeParams; result: InitializeResult }
   'session/prompt': { params: SessionPromptParams; result: SessionPromptResult }
+  'session/projections': { params: SessionProjectionsParams; result: SessionProjectionsResult }
+  'session/cancel': { params: SessionCancelParams; result: Record<string, never> }
+  'session/dispose': { params: SessionDisposeParams; result: Record<string, never> }
+  'session/history': { params: SessionHistoryParams; result: SessionHistoryResult }
+  'session/command': { params: SessionCommandParams; result: SessionCommandResult }
+  'session/rename': { params: SessionRenameParams; result: SessionRenameResult }
+  'session/queue/update': { params: SessionQueueUpdateParams; result: SessionQueueUpdateResult }
+  'session/attachment/read': { params: SessionAttachmentParams; result: SessionAttachmentResult }
+  'session/model/select': { params: SessionModelSelectParams; result: SessionModelSelectResult }
+  'session/sync': { params: SessionSyncParams; result: SessionSyncResult }
+  'session/list': { params: SessionListParams; result: SessionListResult }
+  'session/answer': { params: SessionAnswerParams; result: SessionAnswerResult }
+  'session/question/wait': { params: SessionQuestionWaitParams; result: SessionQuestionWaitResult }
+  'session/search': { params: SessionSearchParams; result: SessionSearchResult }
+  'session/create': { params: SessionCreateParams; result: SessionCreateResult }
+  'session/fork': { params: SessionForkParams; result: SessionForkResult }
   'session/resume': { params: SessionResumeParams; result: Record<string, never> }
   'session/wait': { params: SessionWaitParams; result: Record<string, never> }
   'session/working-directory/get': { params: SessionWorkingDirectoryParams; result: SessionWorkingDirectoryResult }
@@ -221,6 +613,13 @@ export interface SessionQuestionParams {
   sessionId: string
   /** 待渲染的问题批次，答案须覆盖每一项。 */
   questions: AskUserQuestionItem[]
+  /** 发起提问的工具调用 id；生命周期直接提问时缺省，客户端不得自行补全。 */
+  callId?: ToolCallId
+  /**
+   * 该提问是否处于"前台计时等待"。为真时客户端应自行倒计时；超时后本运行时把
+   * 工具结果收敛为 pending，之后的答案改由 `session/answer` 并入下一轮。
+   */
+  timed?: boolean
 }
 
 /** Server→client 请求：某 SDK session 的 agent 请求一次批准。 */

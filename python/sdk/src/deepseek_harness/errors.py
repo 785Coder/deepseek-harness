@@ -21,3 +21,11 @@ class JsonRpcError(HarnessError):
         self.code = code
         self.message = message
         self.data = data
+
+    @property
+    def reason(self) -> str | None:
+        """Stable control-plane classification from `error.data.reason`, if any."""
+        if not isinstance(self.data, dict):
+            return None
+        reason = self.data.get("reason")
+        return reason if isinstance(reason, str) else None

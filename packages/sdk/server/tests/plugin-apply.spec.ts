@@ -178,11 +178,17 @@ describe('dsh-sdk-jsonrpc-server plugin apply', () => {
       harness.send({ jsonrpc: '2.0', id: 'init-1', method: 'initialize', params: { cwd: storageDir, provider: 'deepseek-official', model: 'apply-model' } })
 
       const response = await harness.waitForFrame(frame => frame.id === 'init-1', 'initialize response')
-      expect(response).toEqual({
+      expect(response).toMatchObject({
         jsonrpc: '2.0',
         id: 'init-1',
         result: { serverInfo: { name: 'deepseek-harness-sdk-runtime', version: '0.0.1' } },
       })
+      // 能力清单是增量字段：客户端据此门禁特性，而不是逐方法探测
+      const capabilities = (response.result as {
+        capabilities?: { requests?: string[]; notifications?: string[] }
+      }).capabilities
+      expect(capabilities?.requests).toEqual(expect.arrayContaining(['session/prompt', 'session/command', 'session/fork']))
+      expect(capabilities?.notifications).toEqual(expect.arrayContaining(['session.event', 'session.assistant-stream']))
       expect(harness.exits()).toEqual([])
     } finally {
       await harness.dispose()
@@ -360,7 +366,7 @@ describe('dsh-sdk-jsonrpc-server plugin apply', () => {
       harness.send({ jsonrpc: '2.0', id: 'probe-1', method: 'nope/unknown' })
       const error = await harness.waitForFrame(frame => frame.id === 'probe-1', 'error response for unknown method')
       expect(error.error).toMatchObject({
-        code: -32603,
+        code: -32601,
         message: 'unknown DeepSeek Harness SDK runtime method: nope/unknown',
       })
 

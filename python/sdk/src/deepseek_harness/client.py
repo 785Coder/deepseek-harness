@@ -18,7 +18,11 @@ from .errors import JsonRpcError, SdkProtocolError, TransportClosedError
 from .jobs import (JobView, JobOutputRead, JobRowsSubscription, JobOutputSubscription,
                    JobListResult, JobSubscriptionReceipt, JobRemovedError, JobSubscriptionError,
                    _job_closed_error, job_error, parse_rows, parse_output)
-from .models import IncomingRequest, InitializeResponse, JsonObject, JsonValue, Notification
+from .models import (IncomingRequest, InitializeResponse, JsonObject, JsonValue, Notification,
+                     SessionAnswerResult, SessionQuestionWaitResult, SessionAttachmentResult, SessionCommandResult, SessionCreateResult,
+                     SessionForkResult, SessionHistoryResult, SessionListResult,
+                     SessionModelSelectionResult, SessionProjections, SessionSearchResult,
+                     SessionSyncResult, SessionTitle)
 
 ModelT = TypeVar("ModelT", bound=BaseModel)
 NotificationFilter: TypeAlias = Callable[[Notification], bool]
@@ -60,6 +64,7 @@ class HarnessClient:
         ] = {}
         self._job_subscriptions: dict[str, JobRowsSubscription | JobOutputSubscription] = {}
         self._session_parents: dict[str, str] = {}
+        self._handshake_complete = False
         self._requests: queue.Queue[IncomingRequest | BaseException] = queue.Queue()
         self._stderr_lines: deque[str] = deque(maxlen=400)
         self._reader_thread: threading.Thread | None = None
@@ -75,6 +80,7 @@ class HarnessClient:
     def start(self) -> None:
         if self._proc is not None:
             return
+        self._handshake_complete = False
         with self._lock:
             self._session_parents.clear()
         env = os.environ.copy()
@@ -142,6 +148,7 @@ class HarnessClient:
         model: str,
         reasoning_effort: str | None = None,
         max_tokens: int | None = None,
+        session_ids: tuple[str, ...] | None = None,
     ) -> InitializeResponse:
         payload: JsonObject = {
             "cwd": str(Path(cwd).resolve()),
@@ -152,18 +159,24 @@ class HarnessClient:
             payload["reasoningEffort"] = reasoning_effort
         if max_tokens is not None:
             payload["maxTokens"] = max_tokens
+        if session_ids is not None:
+            payload["sessionIds"] = list(session_ids)
         try:
-            return self.request(
+            response = self.request(
                 "initialize",
                 payload,
                 response_model=InitializeResponse,
                 timeout_seconds=self.config.initialize_timeout_seconds,
             )
         except TimeoutError as error:
-            self.close()
+            # A failed handshake leaves no usable runtime; a later retry after a
+            # completed handshake (for example a conflict) must not kill one.
+            if not self._handshake_complete:
+                self.close()
             raise TimeoutError(f"{error}\nselected dsh profile {self.config.profile!r}") from error
         except BaseException as error:
-            self.close()
+            if not self._handshake_complete:
+                self.close()
             diagnostics = self._runtime_diagnostics()
             if isinstance(error, JsonRpcError) and diagnostics:
                 raise JsonRpcError(
@@ -172,6 +185,8 @@ class HarnessClient:
                     error.data,
                 ) from error
             raise
+        self._handshake_complete = True
+        return response
 
     def session_prompt(
         self,
@@ -217,6 +232,166 @@ class HarnessClient:
             response_model=_WorkingDirectoryResponse,
         )
         return response.cwd
+
+    def cancel_session(self, session_id: str) -> None:
+        """Interrupt the active turn of one attached session, keeping its pending inbox."""
+        self.request("session/cancel", {"sessionId": session_id}, response_model=_EmptyResponse)
+
+    def dispose_session(self, session_id: str) -> None:
+        """Release one attached session; a later prompt may create it again."""
+        self.request("session/dispose", {"sessionId": session_id}, response_model=_EmptyResponse)
+
+    def session_history(
+        self,
+        session_id: str,
+        *,
+        from_seq: int | None = None,
+        limit: int | None = None,
+        align: str | None = None,
+        before_seq: int | None = None,
+    ) -> SessionHistoryResult:
+        """Read one page of committed events; the cursor is inclusive.
+
+        ``align="message"`` also returns the message event whose cited sources
+        already fell inside this page, so a page never ends on orphaned sources.
+        """
+        payload: JsonObject = {"sessionId": session_id}
+        if from_seq is not None:
+            payload["fromSeq"] = from_seq
+        if limit is not None:
+            payload["limit"] = limit
+        if align is not None:
+            payload["align"] = align
+        if before_seq is not None:
+            payload["beforeSeq"] = before_seq
+        return self.request("session/history", payload, response_model=SessionHistoryResult)
+
+    def update_session_queue(self, session_id: str, item_id: str, action: JsonObject) -> None:
+        """Mutate one still-pending queue item: edit its text, drop it, or steer it."""
+        self.request(
+            "session/queue/update",
+            {"sessionId": session_id, "itemId": item_id, "action": action},
+            response_model=_QueueUpdateResponse,
+        )
+
+    def run_session_command(self, session_id: str, line: str) -> bool:
+        """Execute one slash-command line without a model turn; return whether it matched."""
+        response = self.request(
+            "session/command",
+            {"sessionId": session_id, "line": line},
+            response_model=SessionCommandResult,
+        )
+        return response.matched
+
+    def rename_session(self, session_id: str, title: str) -> SessionTitle:
+        """Normalize and pin a user-owned session title."""
+        return self.request(
+            "session/rename",
+            {"sessionId": session_id, "title": title},
+            response_model=SessionTitle,
+        )
+
+    def session_projections(self, session_id: str) -> SessionProjections:
+        """Read one consistent projection baseline for a session."""
+        return self.request(
+            "session/projections",
+            {"sessionId": session_id},
+            response_model=SessionProjections,
+        )
+
+    def sync_session(
+        self,
+        session_id: str,
+        *,
+        from_seq: int | None = None,
+        limit: int | None = None,
+    ) -> SessionSyncResult:
+        """Align a reconnecting client: authoritative next sequence, missed tail, and baseline."""
+        payload: JsonObject = {"sessionId": session_id}
+        if from_seq is not None:
+            payload["fromSeq"] = from_seq
+        if limit is not None:
+            payload["limit"] = limit
+        return self.request("session/sync", payload, response_model=SessionSyncResult)
+
+    def select_session_model(
+        self,
+        session_id: str,
+        provider: str,
+        model: str,
+        *,
+        reasoning_effort: str | None = None,
+    ) -> SessionModelSelectionResult:
+        """Install one validated route for the session's next and later requests."""
+        payload: JsonObject = {"sessionId": session_id, "provider": provider, "model": model}
+        if reasoning_effort is not None:
+            payload["reasoningEffort"] = reasoning_effort
+        return self.request("session/model/select", payload, response_model=SessionModelSelectionResult)
+
+    def read_session_attachment(self, session_id: str, attachment_id: str) -> SessionAttachmentResult:
+        """Read one image the session already references; an unreferenced id is refused."""
+        return self.request(
+            "session/attachment/read",
+            {"sessionId": session_id, "attachmentId": attachment_id},
+            response_model=SessionAttachmentResult,
+        )
+
+    def question_wait(self, session_id: str, call_id: str, *, release: bool = False) -> int | None:
+        """Claim or release the Host's foreground countdown without submitting an answer."""
+        response = self.request(
+            "session/question/wait",
+            {"sessionId": session_id, "callId": call_id, "action": "release" if release else "attach"},
+            response_model=SessionQuestionWaitResult,
+        )
+        return response.remainingMs
+
+    def answer_question_result(self, session_id: str, call_id: str, answer: JsonObject) -> SessionAnswerResult:
+        """Queue a late answer and expose the durable state when it was not yet continued."""
+        return self.request(
+            "session/answer",
+            {"sessionId": session_id, "callId": call_id, "answer": answer},
+            response_model=SessionAnswerResult,
+        )
+
+    def answer_question(self, session_id: str, call_id: str, answer: JsonObject) -> bool:
+        """Answer a continued question; return whether the reply was queued."""
+        return self.answer_question_result(session_id, call_id, answer).accepted
+
+    def list_sessions(self, *, limit: int | None = None) -> SessionListResult:
+        """List stored sessions newest first with their latest log-backed titles."""
+        payload: JsonObject = {}
+        if limit is not None:
+            payload["limit"] = limit
+        return self.request("session/list", payload, response_model=SessionListResult)
+
+    def search_sessions(
+        self,
+        query: str,
+        *,
+        limit: int | None = None,
+        cursor: str | None = None,
+    ) -> SessionSearchResult:
+        """Full-text search over stored sessions, grouped by session."""
+        payload: JsonObject = {"query": query}
+        if limit is not None:
+            payload["limit"] = limit
+        if cursor is not None:
+            payload["cursor"] = cursor
+        return self.request("session/search", payload, response_model=SessionSearchResult)
+
+    def create_session(self, session_id: str | None = None) -> SessionCreateResult:
+        """Create or adopt one session identity without prompting it."""
+        payload: JsonObject = {}
+        if session_id is not None:
+            payload["sessionId"] = session_id
+        return self.request("session/create", payload, response_model=SessionCreateResult)
+
+    def fork_session(self, session_id: str, *, at_seq: int | None = None) -> SessionForkResult:
+        """Fork one session from an exact committed prefix."""
+        payload: JsonObject = {"sessionId": session_id}
+        if at_seq is not None:
+            payload["atSeq"] = at_seq
+        return self.request("session/fork", payload, response_model=SessionForkResult)
 
     def request(
         self,
@@ -328,13 +503,23 @@ class HarnessClient:
             pass  # Local teardown must still wake consumers after runtime loss.
 
     def next_request(self) -> IncomingRequest:
+        """Block for one runtime request.
+
+        A runtime has a single request queue, so one process should run exactly
+        one consumer: either ``Session.run(on_request=...)`` or an
+        instance-level dispatcher, never both.
+        """
         item = self._requests.get()
         if isinstance(item, BaseException):
             raise item
         return item
 
     def next_request_nowait(self) -> IncomingRequest | None:
-        """非阻塞取一条运行时发来的请求；无则返回 None。"""
+        """非阻塞取一条运行时发来的请求；无则返回 None。
+
+        非阻塞版本让常驻消费者能在等待间检查停止位；同一 runtime 仍然只允许
+        一个消费者（与 ``next_request`` 同一队列）。
+        """
         try:
             item = self._requests.get_nowait()
         except queue.Empty:
@@ -702,6 +887,10 @@ class NotificationSubscription:
 
 class _SessionPromptResponse(BaseModel):
     messageId: str
+
+
+class _QueueUpdateResponse(BaseModel):
+    accepted: bool
 
 
 class _WorkingDirectoryResponse(BaseModel):

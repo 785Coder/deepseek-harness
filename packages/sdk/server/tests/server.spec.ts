@@ -523,6 +523,7 @@ describe('HarnessSdkJsonRpcServer', () => {
       session,
     } satisfies Pick<Agent, 'id' | 'session'>) as Agent
 
+    server['ownership'].bind(agent)
     ctx.emit('agent/status', { agent, status: 'running' })
     ctx.emit('agent/status', { agent, status: 'idle' })
 
@@ -535,7 +536,7 @@ describe('HarnessSdkJsonRpcServer', () => {
     await ctx.fiber.dispose()
   })
 
-  it('notifies the host when a child session is created with parent lineage', async () => {
+  it('does not announce a child from durable parent lineage alone', async () => {
     const storageDir = await mkdtemp(join(tmpdir(), 'dsh-jsonrpc-subagent-'))
     const ctx = await makeHarness(storageDir)
     try {
@@ -549,13 +550,7 @@ describe('HarnessSdkJsonRpcServer', () => {
         meta: { cwd: storageDir, parentSession: SessionId('main') },
       })
 
-      expect(transport.notifications).toContainEqual({
-        method: 'subagent.started',
-        params: {
-          parentSessionId: 'main',
-          childSessionId: 'child-session',
-        },
-      })
+      expect(transport.notifications.filter(item => item.method === 'subagent.started')).toEqual([])
 
       await server.shutdown()
     } finally {
@@ -599,6 +594,7 @@ describe('HarnessSdkJsonRpcServer', () => {
         meta: { cwd: storageDir },
         agentOptions: { provider: 'deepseek-official', model: 'deepseek-official' },
       })
+      server['ownership'].bind(parentHandle.agent)
       // A custom in-process provider may own its child at the provider/root
       // scope while preserving durable parent lineage.
       const handle = await ctx.agents.create({
@@ -670,6 +666,7 @@ describe('HarnessSdkJsonRpcServer', () => {
         meta: { cwd: storageDir },
         agentOptions: { model: 'deepseek-official' },
       })
+      server['ownership'].bind(parentHandle.agent)
       const collidingChild = await parentHandle.agent.ctx.agents.create({
         sessionId: SessionId('remote-run-id'),
         meta: { cwd: storageDir, parentSession: SessionId('collision-parent') },
@@ -709,6 +706,7 @@ describe('HarnessSdkJsonRpcServer', () => {
         meta: { cwd: storageDir },
         agentOptions: { model: 'deepseek-official' },
       })
+      server['ownership'].bind(parentHandle.agent)
       const childHandle = await parentHandle.agent.ctx.agents.create({
         sessionId: SessionId('continuation-child'),
         meta: { cwd: storageDir, parentSession: SessionId('continuation-parent') },
@@ -755,6 +753,7 @@ describe('HarnessSdkJsonRpcServer', () => {
         meta: { cwd: storageDir },
         agentOptions: { model: 'deepseek-official' },
       })
+      server['ownership'].bind(oldParent.agent)
       const oldChild = await oldParent.agent.ctx.agents.create({
         sessionId: SessionId('reused-child'),
         meta: { cwd: storageDir, parentSession: SessionId('old-parent') },
@@ -799,6 +798,7 @@ describe('HarnessSdkJsonRpcServer', () => {
         meta: { cwd: storageDir },
         agentOptions: { model: 'deepseek-official' },
       })
+      server['ownership'].bind(newParent.agent)
       const newChild = await newParent.agent.ctx.agents.create({
         sessionId: SessionId('reused-child'),
         meta: { cwd: storageDir, parentSession: SessionId('new-parent') },
@@ -857,6 +857,7 @@ describe('HarnessSdkJsonRpcServer', () => {
         meta: { cwd: storageDir },
         agentOptions: { model: 'deepseek-official' },
       })
+      server['ownership'].bind(parent.agent)
       const child = await parent.agent.ctx.agents.create({
         sessionId: SessionId('provider-reuse-child'),
         meta: { cwd: storageDir, parentSession: SessionId('provider-reuse-parent') },
@@ -991,6 +992,7 @@ describe('HarnessSdkJsonRpcServer', () => {
       }, true)
       const transport = new FakeTransport()
       const server = new HarnessSdkJsonRpcServer(ctx, transport, { maxTokensAsSuccess: true })
+      server['ownership'].bind(parentHandle.agent)
 
       missedStartResult.resolve({ output: [], stopReason: 'max-tokens' })
       await missedStartRun.result
@@ -1370,6 +1372,7 @@ describe('HarnessSdkJsonRpcServer', () => {
     const server = new HarnessSdkJsonRpcServer(ctx, new FakeTransport())
 
     await expect(server.shutdown()).rejects.toBe(listenerFailure)
-    expect(disposed.toSorted()).toEqual(Array.from({ length: subscription }, (_, index) => index + 1))
+    expect(disposed.toSorted((left, right) => left - right))
+      .toEqual(Array.from({ length: subscription }, (_, index) => index + 1))
   })
 })

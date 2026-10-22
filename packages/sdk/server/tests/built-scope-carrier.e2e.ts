@@ -32,6 +32,7 @@ const [
   JsonlSessionPersistence,
   { HarnessSdkJsonRpcServer },
   { SessionId },
+  { LlmAdapter },
 ] = await Promise.all([
   load("vendor/cordis/lib/index.js"),
   load("packages/core/agent-loop/lib/index.js"),
@@ -40,6 +41,7 @@ const [
   load("packages/session/session-persistence-jsonl/lib/index.js"),
   load("packages/sdk/server/lib/index.js"),
   load("packages/core/session/lib/index.js"),
+  load("packages/llm/llm/lib/index.js"),
 ]);
 
 const storageRoot = await mkdtemp(join(tmpdir(), "jsonrpc-built-scope-"));
@@ -56,11 +58,23 @@ try {
     request() { return Promise.reject(new Error("unexpected host request")); },
     notify(method, params) { notifications.push({ method, params }); },
   });
-  const parent = await ctx.agents.create({
-    sessionId: SessionId("built-parent"),
-    meta: { cwd: storageRoot },
-    agentOptions: { model: "test" },
-  });
+  // A route the deployment registers but cannot stream: initialize accepts it,
+  // and the child turn fails with an unavailable model.
+  class UnavailableAdapter extends LlmAdapter {
+    resolveModel(provider, model) {
+      return Promise.resolve({ provider, id: model, name: model });
+    }
+    async *stream() {
+      throw new Error("the unavailable test model was called");
+    }
+  }
+  ctx.llm.registerAdapter(["test-provider"], new UnavailableAdapter());
+  await server.initialize({ cwd: storageRoot, provider: "test-provider", model: "test" });
+  // The server reports subagent completion only for a parent this client owns,
+  // so the parent is created and bound through the SDK surface itself.
+  await server.create({ sessionId: "built-parent" });
+  const parent = ctx.agents.get(SessionId("built-parent"));
+  if (parent === undefined) throw new Error("the SDK server did not attach the parent session");
   const unregister = ctx.subagents.registerProvider({
     name: "built-local",
     capabilities: { agentOptions: false, agentPreset: false, outputSchema: false, depthLimit: false },
@@ -72,7 +86,7 @@ try {
     childId: SessionId("built-child"),
     label: "built scope carrier",
     delivery: "caller",
-    request: { parent: parent.agent, prompt: [{ type: "text", text: "Use the unavailable test model." }] },
+    request: { parent, prompt: [{ type: "text", text: "Use the unavailable test model." }] },
     signal: new AbortController().signal,
   });
   await run.result;
@@ -81,7 +95,7 @@ try {
   console.log(JSON.stringify(notifications.filter(({ method }) => method === "subagent.finished")));
   await run.dispose();
   unregister();
-  await parent.dispose();
+  await server.disposeSession({ sessionId: "built-parent" });
   await server.shutdown();
 } finally {
   await ctx.fiber.dispose();

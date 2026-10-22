@@ -279,7 +279,16 @@ export class HarnessClient {
       || typeof result.serverInfo.name !== 'string' || typeof result.serverInfo.version !== 'string') {
       throw new SdkProtocolError(`initialize returned no server identity: ${JSON.stringify(result)}`)
     }
-    return { serverInfo: { name: result.serverInfo.name, version: result.serverInfo.version } }
+    const capabilities = isRecord(result.capabilities) ? result.capabilities : undefined
+    const requests = capabilities === undefined ? undefined : stringList(capabilities.requests)
+    const notifications = capabilities === undefined ? undefined : stringList(capabilities.notifications)
+    if (requests === undefined || notifications === undefined) {
+      throw new SdkProtocolError(`initialize returned no capability lists: ${JSON.stringify(result)}`)
+    }
+    return {
+      serverInfo: { name: result.serverInfo.name, version: result.serverInfo.version },
+      capabilities: { requests, notifications },
+    }
   }
 
   /**
@@ -518,6 +527,22 @@ export function createProcessHarnessClient(options: RuntimeProcessOptions): Harn
  */
 export function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+/**
+ * Read a wire string list, rejecting a list with a non-string entry.
+ * @param value - the wire value to probe.
+ * @returns the entries as strings, or `undefined` when `value` is not a string array.
+ */
+function stringList(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) return undefined
+  const entries: unknown[] = value
+  const strings: string[] = []
+  for (const entry of entries) {
+    if (typeof entry !== 'string') return undefined
+    strings.push(entry)
+  }
+  return strings
 }
 
 /** The message of a thrown value (the transport only throws `Error`s; `String` covers the rest). */

@@ -134,6 +134,12 @@ export interface AskUserQuestionRequestEvent {
   /** Cancellation lifetime of the pending request. */
   signal?: AbortSignal
   /**
+   * Tool call that asked this question, when a tool call is the asker. Carried
+   * to clients that key their card by it; a lifecycle-initiated question has
+   * no tool call and leaves it absent.
+   */
+  callId?: ToolCallId
+  /**
    * Tool call the Client card is keyed by. Timed answerers attach to the
    * business wait stream before starting their local countdown.
    */
