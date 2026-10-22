@@ -18,6 +18,10 @@
       "types": "./lib/types/index.d.ts",
       "default": "./lib/index.js"
     },
+    "./shared": {
+      "types": "./lib/types/shared.d.ts",
+      "default": "./lib/shared.js"
+    },
     "./types": {
       "types": "./lib/types/types.d.ts",
       "default": "./lib/types/types.js"
@@ -61,6 +65,7 @@
   "files": [
     "locale/*.json",
     "lib/index.js",
+    "lib/shared.js","lib/model-selection-projection-*.js",
     "lib/client.js",
     "lib/types/**/*.js",
     "lib/types/**/*.d.ts",

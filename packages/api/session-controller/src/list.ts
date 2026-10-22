@@ -74,6 +74,24 @@ export function truncateUnicodeCodePoints(value: string, maximum: number): strin
   return value
 }
 
+/**
+ * Register the shared activity/blank fold for Session list consumers.
+ * @param ctx - context owning this registration.
+ * @returns the registration disposer.
+ */
+export function installSessionListMetadata(ctx: Context): () => void {
+  const registry = ctx.get('sessionProjections')
+  if (registry === undefined) throw new Error('session lists require session projections')
+  return registry.register<'sessionListMetadata', SessionListMetadata>({
+    key: 'sessionListMetadata',
+    stateSchema: sessionListMetadataSchema,
+    init: () => ({ blank: true, lastPromptAt: null }),
+    apply: applySessionListMetadata,
+    wire: { viewSchema: sessionListMetadataSchema, view: state => state },
+    stateVersion: 1,
+  })
+}
+
 /** Owns list projection registration, bounded cold summaries, and authorized search. */
 export class ApiSessionList {
   /**
@@ -81,14 +99,7 @@ export class ApiSessionList {
    * @param workSliceMs - Resolved positive integral list-work budget in milliseconds.
    */
   constructor(private readonly ctx: Context, private readonly workSliceMs: number) {
-    ctx.sessionProjections.register<'sessionListMetadata', SessionListMetadata>({
-      key: 'sessionListMetadata',
-      stateSchema: sessionListMetadataSchema,
-      init: () => ({ blank: true, lastPromptAt: null }),
-      apply: applySessionListMetadata,
-      wire: { viewSchema: sessionListMetadataSchema, view: state => state },
-      stateVersion: 1,
-    })
+    installSessionListMetadata(ctx)
     ctx.inject(['attachments'], (attachmentCtx) => {
       ctx.sessionProjections.register<'imageLimits', null>({
         key: 'imageLimits',
@@ -292,23 +303,38 @@ export class ApiSessionList {
     header: SessionHeader,
     session: Session | undefined,
   ): SessionProjectionHints | undefined {
-    try {
-      if (session !== undefined) {
-        // The live registry computed the block for this Session: its watermark
-        // shares the sequence space of the Session's baselines and frames.
-        return hintsOf('sequenced', this.ctx.sessionProjections.cachedSnapshot(session))
-      }
-      // A cold row reads the persisted cache by header alone; the cache serves
-      // seeded and unseeded lifecycles alike because a listing never seeds a
-      // fold. The watermark is the stored record's own.
-      const cache = this.ctx.get('sessionProjectionCache')
-      return hintsOf('cached', cache?.cachedSnapshot(header) ?? cache?.cachedPredecessorTitle(header))
-    } catch (error) {
-      this.ctx.logger.warn(
-        `api-session.list: projection column for "${header.id}" failed; serving the row without it: ${String(error)}`,
-      )
-      return undefined
+    return sessionProjectionHints(this.ctx, header, session)
+  }
+}
+
+/**
+ * Read live projection columns or cold cached columns without loading history.
+ * @param ctx - host services; no Web controller is mounted.
+ * @param header - authorized row identity.
+ * @param session - matching live Session, when attached.
+ * @returns available columns at their own sequence watermark.
+ */
+export function sessionProjectionHints(
+  ctx: Context,
+  header: SessionHeader,
+  session: Session | undefined,
+): SessionProjectionHints | undefined {
+  try {
+    if (session !== undefined) {
+      // The live registry computed the block for this Session: its watermark
+      // shares the sequence space of the Session's baselines and frames.
+      return hintsOf('sequenced', ctx.get('sessionProjections')?.cachedSnapshot(session))
     }
+    // A cold row reads the persisted cache by header alone; the cache serves
+    // seeded and unseeded lifecycles alike because a listing never seeds a
+    // fold. The watermark is the stored record's own.
+    const cache = ctx.get('sessionProjectionCache')
+    return hintsOf('cached', cache?.cachedSnapshot(header) ?? cache?.cachedPredecessorTitle(header))
+  } catch (error) {
+    ctx.logger.warn(
+      `api-session.list: projection column for "${header.id}" failed; serving the row without it: ${String(error)}`,
+    )
+    return undefined
   }
 }
 

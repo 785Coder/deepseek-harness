@@ -1,18 +1,19 @@
 /** Session commands whose activation policy is explicit at each Remote method. */
 
 import { modelAvailable } from './catalog.ts'
+import { referencedImage } from './image-references.ts'
 import { randomUUID } from 'node:crypto'
 import type { Context } from '@deepseek-ai/cordis'
 import { brandString } from '@deepseek-ai/dsh-brand'
 import type { Agent, ModelSelection as AgentModelSelection } from '@deepseek-ai/dsh-agent'
 import { AttachmentError } from '@deepseek-ai/dsh-attachment'
 import type {
-  AttachmentAdmissionPart, FileAttachmentRef, ImageAttachmentRef,
+  AttachmentAdmissionPart, FileAttachmentRef,
 } from '@deepseek-ai/dsh-attachment'
 import type { FileUploadReceiptId } from '@deepseek-ai/dsh-client-file-upload/types'
 import type {} from '@deepseek-ai/dsh-client-file-upload'
 import {
-  ReasoningEffortId, assistantStreamChunks, createUserMessage, freezeMessage,
+  ReasoningEffortId, createUserMessage, freezeMessage,
 } from '@deepseek-ai/dsh-llm'
 import type { MessageSource } from '@deepseek-ai/dsh-llm'
 import { buildForkSeed } from '@deepseek-ai/dsh-session/fork'
@@ -593,81 +594,4 @@ function hasPromptRequest(agent: Agent, requestId: SessionRequestId): boolean {
     const source = event.data.source
     return source.kind === 'user' && 'rpcId' in source && source.rpcId === requestId
   })
-}
-function imageBlockIn(
-  content: unknown,
-  match: (ref: ImageAttachmentRef) => boolean,
-): ImageAttachmentRef | undefined {
-  if (!Array.isArray(content)) return undefined
-  for (const value of content) {
-    if (typeof value !== 'object' || value === null || Array.isArray(value)) continue
-    const block = value as { readonly type?: unknown; readonly attachment?: unknown }
-    if (block.type === 'image' && typeof block.attachment === 'object' && block.attachment !== null) {
-      const ref = block.attachment as ImageAttachmentRef
-      if (match(ref)) return ref
-    }
-  }
-  return undefined
-}
-
-/** Read only first-party declared content fields; unknown event payloads stay opaque. */
-function imageInEvent(
-  event: SessionEvent,
-  match: (ref: ImageAttachmentRef) => boolean,
-): ImageAttachmentRef | undefined {
-  const data = event.data as {
-    readonly content?: unknown
-    readonly message?: { readonly content?: unknown }
-    readonly inserted?: unknown
-    readonly summary?: unknown
-    readonly rawOutput?: unknown
-  }
-  // First-party event payloads can be present without their producer plugin mounted.
-  const type: string = event.type
-  switch (type) {
-    case 'user/message':
-    case 'tool/ptc-dispatch':
-      return imageBlockIn(data.content, match)
-    case 'system/message':
-    case 'developer/message':
-    case 'tool/result':
-    case 'team/message/queued':
-      return imageBlockIn(data.message?.content, match)
-    case 'agent/inbox/spliced': {
-      const messages = data.inserted
-      if (!Array.isArray(messages)) return undefined
-      for (const message of messages as readonly unknown[]) {
-        if (typeof message !== 'object' || message === null || Array.isArray(message)) continue
-        const found = imageBlockIn((message as { readonly content?: unknown }).content, match)
-        if (found !== undefined) return found
-      }
-      return undefined
-    }
-    case 'compaction/summary':
-      return imageBlockIn(data.summary, match) ?? imageBlockIn(data.rawOutput, match)
-    case 'assistant/message': {
-      const found = imageBlockIn(data.message?.content, match)
-      if (found !== undefined) return found
-      break
-    }
-    case 'assistant/attempt': break
-    default: return undefined
-  }
-  const assistant = event as SessionEvent<'assistant/message' | 'assistant/attempt'>
-  for (const chunk of assistantStreamChunks(assistant.data.stream, 'block-end')) {
-    const found = imageBlockIn([chunk.block], match)
-    if (found !== undefined) return found
-  }
-  return undefined
-}
-
-function referencedImage(
-  events: readonly SessionEvent[],
-  attachmentId: string,
-): ImageAttachmentRef | undefined {
-  for (const event of events) {
-    const found = imageInEvent(event, ref => String(ref.attachmentId) === attachmentId)
-    if (found !== undefined) return found
-  }
-  return undefined
 }

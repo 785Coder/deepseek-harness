@@ -19,6 +19,7 @@ const modelSelectionSchema = z.object({
 const modelSelectionProjectionStateSchema = z.object({
   lastUsed: modelSelectionSchema.nullable(),
   pending: modelSelectionSchema.nullable(),
+  selected: modelSelectionSchema.optional(),
 }) as z.ZodType<ModelSelectionProjectionState>
 
 const modelSelectionProjectionSchema = z.object({
@@ -39,7 +40,7 @@ function applyModelSelectionProjection(
   if (event.type === 'model/selection') {
     return sameSelection(state.pending, event.data)
       ? state
-      : { lastUsed: state.lastUsed, pending: event.data }
+      : { ...state, pending: event.data, selected: event.data }
   }
   if (event.type !== 'request/header') return state
   const lastUsed: ModelSelection = {
@@ -52,7 +53,7 @@ function applyModelSelectionProjection(
   const pending = sameSelection(state.pending, lastUsed) ? null : state.pending
   return sameSelection(state.lastUsed, lastUsed) && pending === state.pending
     ? state
-    : { lastUsed, pending }
+    : { ...state, lastUsed, pending }
 }
 
 const modelSelectionProjection = {
@@ -64,7 +65,7 @@ const modelSelectionProjection = {
     viewSchema: modelSelectionProjectionSchema,
     view: state => ({ lastUsed: state.lastUsed, next: state.pending ?? state.lastUsed }),
   },
-  stateVersion: 2,
+  stateVersion: 3,
 } satisfies ProjectionDefinition<'modelSelection', ModelSelectionProjectionState>
 
 function sameSelection(left: ModelSelection | null, right: ModelSelection | null): boolean {
@@ -77,7 +78,10 @@ function sameSelection(left: ModelSelection | null, right: ModelSelection | null
 /**
  * Register the durable model-selection projection when the registry is present.
  * @param ctx - Session Controller context.
+ * @returns the registration disposer, also owned by the calling context.
  */
-export function installModelSelectionProjection(ctx: Context): void {
-  ctx.sessionProjections.register(modelSelectionProjection)
+export function installModelSelectionProjection(ctx: Context): () => void {
+  const registry = ctx.get('sessionProjections')
+  if (registry === undefined) throw new Error('model selection requires session projections')
+  return registry.register(modelSelectionProjection)
 }

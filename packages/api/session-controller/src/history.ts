@@ -4,7 +4,6 @@ import type { Context } from '@deepseek-ai/cordis'
 import { Deque } from '@deepseek-ai/dsh-deque'
 import type { AssistantStreamFrame } from '@deepseek-ai/dsh-agent'
 import {
-  isAppendSurfaceEvent,
   SessionLogOffset,
   SessionSeq,
 } from '@deepseek-ai/dsh-session'
@@ -34,9 +33,9 @@ import type {
   SessionWireEvent,
 } from './types.ts'
 import { SessionAssistantStreamAccumulator } from './assistant-stream.ts'
+import { paginateSessionHistory } from './history-page.ts'
 
 const DEFAULT_MAX_MESSAGES = 50
-const MESSAGE_TYPES = new Set(['user/message', 'assistant/message'])
 
 /** Implements cold-safe history operations delegated by the Session Controller. */
 export class SessionHistoryController {
@@ -97,7 +96,7 @@ export class SessionHistoryController {
     if (throughSeq >= 0 && sourceLog[throughSeq]?.seq !== throughSeq) {
       throw new RemoteError('gateway/internal', `session log does not contain through seq ${String(throughSeq)}`, {})
     }
-    const page = paginate(
+    const page = paginateSessionHistory(
       sourceLog,
       beforeSeq,
       request.maxMessages ?? DEFAULT_MAX_MESSAGES,
@@ -181,7 +180,7 @@ export class SessionHistoryController {
       signal.throwIfAborted()
       const cursor = source.cursor
       snapshotCursor = cursor
-      const page = paginate(events, undefined, request.maxMessages ?? DEFAULT_MAX_MESSAGES, cursor, request.turnWindow)
+      const page = paginateSessionHistory(events, undefined, request.maxMessages ?? DEFAULT_MAX_MESSAGES, cursor, request.turnWindow)
       const assistantStream = request.assistantStream === true
         ? this.assistantStreams.get(target)?.snapshot() ?? { revision: 0 }
         : undefined
@@ -387,43 +386,6 @@ function rejectNotFound(address: SessionAddress): never {
     parentSessionId: address.parentSessionId,
     childSessionId: address.childSessionId,
   })
-}
-
-function paginate(
-  events: readonly SessionEvent[],
-  beforeSeq: SessionLogOffsetType | undefined,
-  maxMessages: number,
-  throughSeq: SessionSeqCursor,
-  turnWindow?: SessionPageRequest['turnWindow'],
-): { readonly events: SessionEvent[]; readonly hasMore: boolean } {
-  const end = SessionLogOffset(Math.min(throughSeq + 1, beforeSeq ?? throughSeq + 1))
-  let count = 0
-  let turns = 0
-  let cut = SessionLogOffset(0)
-  for (let index = end - 1; index >= 0; index--) {
-    const event = events[index] as SessionEvent
-    if (turnWindow !== undefined && event.type === 'turn/start') {
-      turns++
-      if (count >= turnWindow.minMessages && turns >= turnWindow.minTurns) {
-        cut = SessionLogOffset(index)
-        break
-      }
-    }
-    if (!MESSAGE_TYPES.has(event.type) || !isAppendSurfaceEvent(event)) continue
-    count++
-    const sources = event.sourceEventSeqs
-    let groupStart = event.seq
-    if (sources !== undefined) {
-      for (const source of sources) {
-        if (source < groupStart) groupStart = source
-      }
-    }
-    if (count >= maxMessages) {
-      cut = SessionLogOffset(groupStart)
-      break
-    }
-  }
-  return { events: events.slice(cut, end), hasMore: cut > 0 }
 }
 
 /** Translate current logical Session metadata to the browser wire. */
