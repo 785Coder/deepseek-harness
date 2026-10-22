@@ -8,7 +8,7 @@ from typing import Callable
 
 from .client import HarnessClient, HarnessConfig
 from .errors import SdkProtocolError
-from .models import (IncomingRequest, JsonObject, Notification, SessionAttachmentResult, SessionHistoryResult,
+from .models import (InitializeCapabilities, InitializeResponse, IncomingRequest, JsonObject, Notification, SessionAttachmentResult, SessionHistoryResult,
                      SessionListResult, SessionModelSelectionResult, SessionProjections, SessionSearchResult,
                      SessionSyncResult, SessionTitle)
 
@@ -97,6 +97,18 @@ class DeepSeekHarness:
             _launch_args=_launch_args,
         )
         self._initialized = False
+        self._initialize_response: InitializeResponse | None = None
+
+    @property
+    def initialize_response(self) -> InitializeResponse | None:
+        """Initialize handshake result; capabilities are validated by the host."""
+        return self._initialize_response
+
+    @property
+    def capabilities(self) -> InitializeCapabilities | None:
+        """Request/notification methods advertised by the runtime build."""
+        response = self._initialize_response
+        return None if response is None else response.capabilities
 
     def __enter__(self) -> "DeepSeekHarness":
         self.start()
@@ -113,7 +125,7 @@ class DeepSeekHarness:
         if self._initialized:
             return
         self._client.start()
-        self._client.initialize(
+        self._initialize_response = self._client.initialize(
             cwd=self._cwd,
             provider=self.config.provider,
             model=self.config.model,
