@@ -931,7 +931,7 @@ export interface Config {
 }
 ```
 
-Source: [`packages/jobs/jobs-local/src/index.ts:31`](../packages/jobs/jobs-local/src/index.ts)
+Source: [`packages/jobs/jobs-local/src/index.ts:32`](../packages/jobs/jobs-local/src/index.ts)
 
 <a id="deepseek-aidsh-llm-deepseek"></a>
 
@@ -1773,6 +1773,14 @@ Requires: `agents`
 export interface JsonRpcConfig {
   /** Report max-token turn/subagent termination as a successful SDK result. */
   maxTokensAsSuccess?: boolean
+  /** Maximum active task observers per connection. */
+  jobMaxSubscriptions?: number
+  /** Milliseconds allowed for consuming one task frame. */
+  jobAckTimeoutMs?: number
+  /** Task event coalescing window in milliseconds. */
+  jobFlushMs?: number
+  /** Soft output frame budget in UTF-8 bytes. */
+  jobMaxFrameBytes?: number
   /** Transport input override; production uses `process.stdin`. */
   input?: Readable
   /** Transport output override; production uses `process.stdout`. */
